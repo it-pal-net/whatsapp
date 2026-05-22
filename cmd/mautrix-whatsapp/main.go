@@ -31,6 +31,10 @@ func main() {
 			m.Matrix.Provisioning.Router.HandleFunc("POST /v1/pm/{number}", legacyProvResolveIdentifier)
 			m.Matrix.Provisioning.Router.HandleFunc("POST /v1/debug/appstate/{patch}", provAppStateDebug)
 			m.Matrix.Provisioning.Router.HandleFunc("POST /v1/debug/recover-appstate/{patch}", provRecoverAppStateDebug)
+			m.Matrix.Provisioning.Router.HandleFunc(
+				"PUT /v3/portals/{roomID}/relay",
+				setPortalRelay,
+			)
 		}
 	}
 	m.InitVersion(Tag, Commit, BuildTime)
