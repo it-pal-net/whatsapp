@@ -46,6 +46,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
+	"go.mau.fi/mautrix-whatsapp/pkg/connector/discoverycommand"
 	"go.mau.fi/mautrix-whatsapp/pkg/connector/wadb"
 	"go.mau.fi/mautrix-whatsapp/pkg/msgconv"
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
@@ -64,6 +65,8 @@ type WhatsAppConnector struct {
 	mediaEditCache         MediaEditCache
 	mediaEditCacheLock     sync.RWMutex
 	stopMediaEditCacheLoop atomic.Pointer[context.CancelFunc]
+
+	DiscoveryCommand *discoverycommand.Publisher
 }
 
 func init() {
@@ -159,6 +162,18 @@ func (wa *WhatsAppConnector) Start(ctx context.Context) error {
 
 	if !wa.Bridge.Background && wa.Bridge.DB.KV.Get(ctx, "whatsapp_lid_dms_deleted") == "false" {
 		wa.deleteLIDDMsMigration(ctx)
+	}
+
+	if wa.Config.Synccontact.DiscoveryRedisURL != "" {
+		publisher, err := discoverycommand.New(discoverycommand.Config{
+			RedisURL:       wa.Config.Synccontact.DiscoveryRedisURL,
+			CommandsStream: wa.Config.Synccontact.DiscoveryCommandsStream,
+			Debounce:       wa.Config.Synccontact.DiscoveryCommandDebounce,
+		}, zerolog.Ctx(ctx).With().Logger())
+		if err != nil {
+			return fmt.Errorf("failed to initialize discovery command publisher: %w", err)
+		}
+		wa.DiscoveryCommand = publisher
 	}
 
 	return nil

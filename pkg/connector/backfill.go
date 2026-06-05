@@ -463,6 +463,7 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 			log.Err(err).Msg("Failed to save user login history sync portals created flag")
 		}
 		log.Info().Msg("Finished processing all history sync chat resync events")
+		wa.scheduleDiscoveryCommand("history_sync_portals_complete")
 	}()
 }
 

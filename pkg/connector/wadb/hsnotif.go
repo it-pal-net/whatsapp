@@ -45,6 +45,10 @@ const (
 	deleteHSNotificationQuery = `
 		DELETE FROM whatsapp_history_sync_notification WHERE rowid=$1
 	`
+	countPendingHSNotificationsQuery = `
+		SELECT COUNT(*) FROM whatsapp_history_sync_notification
+		WHERE bridge_id=$1 AND user_login_id=$2
+	`
 )
 
 func (hsnq *HistorySyncNotificationQuery) Put(ctx context.Context, loginID networkid.UserLoginID, notif *waE2E.HistorySyncNotification) error {
@@ -75,4 +79,10 @@ func (hsnq *HistorySyncNotificationQuery) GetNext(ctx context.Context, loginID n
 func (hsnq *HistorySyncNotificationQuery) Delete(ctx context.Context, rowid int) error {
 	_, err := hsnq.Exec(ctx, deleteHSNotificationQuery, rowid)
 	return err
+}
+
+func (hsnq *HistorySyncNotificationQuery) CountPending(ctx context.Context, loginID networkid.UserLoginID) (int, error) {
+	var count int
+	err := hsnq.QueryRow(ctx, countPendingHSNotificationsQuery, hsnq.BridgeID, loginID).Scan(&count)
+	return count, err
 }

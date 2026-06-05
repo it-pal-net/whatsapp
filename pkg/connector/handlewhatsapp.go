@@ -739,7 +739,7 @@ func (wa *WhatsAppClient) handleWAJoinedGroup(ctx context.Context, evt *events.J
 	if wa.createDedup.Pop(evt.CreateKey) {
 		return true
 	}
-	return wa.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
+	queued := wa.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
 			LogContext:   nil,
@@ -748,6 +748,10 @@ func (wa *WhatsAppClient) handleWAJoinedGroup(ctx context.Context, evt *events.J
 		},
 		ChatInfo: wa.wrapGroupInfo(ctx, &evt.GroupInfo),
 	}).Success
+	if queued {
+		wa.scheduleDiscoveryCommand("joined_group")
+	}
+	return queued
 }
 
 func (wa *WhatsAppClient) handleWANewsletterJoin(ctx context.Context, evt *events.NewsletterJoin) bool {

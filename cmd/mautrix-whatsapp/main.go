@@ -35,6 +35,10 @@ func main() {
 				"PUT /v3/portals/{roomID}/relay",
 				setPortalRelay,
 			)
+			m.Matrix.Provisioning.Router.HandleFunc(
+				"GET /v3/logins/{login_id}/sync-status",
+				provLoginSyncStatus,
+			)
 		}
 	}
 	m.InitVersion(Tag, Commit, BuildTime)

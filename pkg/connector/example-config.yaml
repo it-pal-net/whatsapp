@@ -42,6 +42,11 @@ pinned_tag: m.favourite
 archive_tag:
 # Tag to apply to the status broadcast room.
 status_broadcast_tag: m.lowpriority
+# Publish unlinked-chat discovery commands to Redis (optional; chat-command-worker consumes).
+synccontact:
+    discovery_redis_url: null
+    discovery_commands_stream: stream:commands
+    discovery_command_debounce: 30s
 # Should the bridge use thumbnails from WhatsApp?
 # They're disabled by default due to very low resolution.
 whatsapp_thumbnail: false

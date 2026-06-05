@@ -54,6 +54,12 @@ type Config struct {
 
 	AnimatedSticker msgconv.AnimatedStickerConfig `yaml:"animated_sticker"`
 
+	Synccontact struct {
+		DiscoveryRedisURL       string        `yaml:"discovery_redis_url"`
+		DiscoveryCommandsStream string        `yaml:"discovery_commands_stream"`
+		DiscoveryCommandDebounce time.Duration `yaml:"discovery_command_debounce"`
+	} `yaml:"synccontact"`
+
 	HistorySync struct {
 		MaxInitialConversations int           `yaml:"max_initial_conversations"`
 		RequestFullSync         bool          `yaml:"request_full_sync"`
@@ -125,6 +131,10 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Int, "animated_sticker", "args", "width")
 	helper.Copy(up.Int, "animated_sticker", "args", "height")
 	helper.Copy(up.Int, "animated_sticker", "args", "fps")
+
+	helper.Copy(up.Str|up.Null, "synccontact", "discovery_redis_url")
+	helper.Copy(up.Str|up.Null, "synccontact", "discovery_commands_stream")
+	helper.Copy(up.Str|up.Int, "synccontact", "discovery_command_debounce")
 
 	helper.Copy(up.Int, "history_sync", "max_initial_conversations")
 	helper.Copy(up.Bool, "history_sync", "request_full_sync")

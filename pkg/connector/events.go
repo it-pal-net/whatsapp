@@ -174,6 +174,9 @@ func (evt *WAMessageEvent) PostHandle(ctx context.Context, portal *bridgev2.Port
 		evt.postHandle = nil
 		ph()
 	}
+	if portal != nil && portal.MXID != "" {
+		evt.wa.scheduleDiscoveryCommand("incoming_message_portal")
+	}
 }
 
 func (evt *WAMessageEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message) (*bridgev2.ConvertedEdit, error) {

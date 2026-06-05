@@ -117,6 +117,11 @@ const (
 		SET synced_login_ts=$4
 		WHERE bridge_id=$1 AND user_login_id=$2 AND chat_jid=$3
 	`
+	countPendingPortalConversationsQuery = `
+		SELECT COUNT(*) FROM whatsapp_history_sync_conversation
+		WHERE bridge_id=$1 AND user_login_id=$2
+			AND (synced_login_ts IS NULL OR synced_login_ts < $3)
+	`
 )
 
 func (cq *ConversationQuery) Put(ctx context.Context, conv *Conversation) error {
@@ -137,6 +142,16 @@ func (cq *ConversationQuery) GetRecent(
 
 func (cq *ConversationQuery) MarkSynced(ctx context.Context, loginID networkid.UserLoginID, chatJID types.JID, loginTS jsontime.Unix) error {
 	return cq.Exec(ctx, markConversationSynced, cq.BridgeID, loginID, chatJID, loginTS)
+}
+
+func (cq *ConversationQuery) CountPendingPortalCreation(
+	ctx context.Context,
+	loginID networkid.UserLoginID,
+	loggedInAtUnix int64,
+) (int, error) {
+	var count int
+	err := cq.GetDB().QueryRow(ctx, countPendingPortalConversationsQuery, cq.BridgeID, loginID, loggedInAtUnix).Scan(&count)
+	return count, err
 }
 
 func (cq *ConversationQuery) Get(ctx context.Context, loginID networkid.UserLoginID, chatJID types.JID) (*Conversation, error) {
