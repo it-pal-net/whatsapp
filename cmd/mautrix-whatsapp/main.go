@@ -36,6 +36,10 @@ func main() {
 				setPortalRelay,
 			)
 			m.Matrix.Provisioning.Router.HandleFunc(
+				"DELETE /v3/portals/{roomID}",
+				deletePortal,
+			)
+			m.Matrix.Provisioning.Router.HandleFunc(
 				"GET /v3/logins/{login_id}/sync-status",
 				provLoginSyncStatus,
 			)
