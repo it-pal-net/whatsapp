@@ -43,6 +43,10 @@ func main() {
 				"GET /v3/logins/{login_id}/sync-status",
 				provLoginSyncStatus,
 			)
+			m.Matrix.Provisioning.Router.HandleFunc(
+				"DELETE /v3/logins/{login_id}/portals",
+				deleteLoginPortals,
+			)
 		}
 	}
 	m.InitVersion(Tag, Commit, BuildTime)

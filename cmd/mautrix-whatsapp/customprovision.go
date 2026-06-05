@@ -18,6 +18,58 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
+// deleteLoginPortals deletes all Matrix portal rooms owned by a given login.
+// It is used when removing a WhatsApp number and its associated chat rooms.
+func deleteLoginPortals(w http.ResponseWriter, r *http.Request) {
+	user := m.Matrix.Provisioning.GetUser(r)
+	if user == nil {
+		mautrix.MForbidden.WithMessage("Authenticated user not found").Write(w)
+		return
+	}
+
+	loginID := networkid.UserLoginID(r.PathValue("login_id"))
+	if loginID == "" {
+		mautrix.MInvalidParam.WithMessage("login_id is required").Write(w)
+		return
+	}
+
+	portals, err := m.Bridge.GetAllPortalsWithMXID(r.Context())
+	if err != nil {
+		hlog.FromRequest(r).Err(err).Str("login_id", string(loginID)).Msg("Failed to load portals for login")
+		matrix.RespondWithError(w, err, "Internal error loading portals")
+		return
+	}
+
+	deleted := 0
+	for _, portal := range portals {
+		if portal.Receiver != loginID {
+			continue
+		}
+
+		err = portal.Delete(r.Context())
+		if err != nil {
+			hlog.FromRequest(r).Err(err).
+				Str("login_id", string(loginID)).
+				Stringer("portal_mxid", portal.MXID).
+				Msg("Failed to delete portal from database")
+			continue
+		}
+
+		err = m.Bridge.Bot.DeleteRoom(r.Context(), portal.MXID, false)
+		if err != nil {
+			hlog.FromRequest(r).Err(err).
+				Str("login_id", string(loginID)).
+				Stringer("portal_mxid", portal.MXID).
+				Msg("Failed to clean up portal Matrix room")
+			continue
+		}
+
+		deleted++
+	}
+
+	exhttp.WriteJSONResponse(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
 type RelayRequest struct {
 	RelayLoginID networkid.UserLoginID `json:"relay_login_id"`
 }
