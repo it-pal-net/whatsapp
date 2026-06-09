@@ -55,9 +55,13 @@ type Config struct {
 	AnimatedSticker msgconv.AnimatedStickerConfig `yaml:"animated_sticker"`
 
 	Synccontact struct {
-		DiscoveryRedisURL       string        `yaml:"discovery_redis_url"`
-		DiscoveryCommandsStream string        `yaml:"discovery_commands_stream"`
+		DiscoveryRedisURL        string        `yaml:"discovery_redis_url"`
+		DiscoveryCommandsStream  string        `yaml:"discovery_commands_stream"`
 		DiscoveryCommandDebounce time.Duration `yaml:"discovery_command_debounce"`
+		// Backfill progress events. RedisURL defaults to DiscoveryRedisURL; Stream
+		// defaults to "stream:domain-events" (consumed by the realtime gateway).
+		BackfillProgressRedisURL string `yaml:"backfill_progress_redis_url"`
+		BackfillProgressStream   string `yaml:"backfill_progress_stream"`
 	} `yaml:"synccontact"`
 
 	HistorySync struct {
@@ -135,6 +139,8 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str|up.Null, "synccontact", "discovery_redis_url")
 	helper.Copy(up.Str|up.Null, "synccontact", "discovery_commands_stream")
 	helper.Copy(up.Str|up.Int, "synccontact", "discovery_command_debounce")
+	helper.Copy(up.Str|up.Null, "synccontact", "backfill_progress_redis_url")
+	helper.Copy(up.Str|up.Null, "synccontact", "backfill_progress_stream")
 
 	helper.Copy(up.Int, "history_sync", "max_initial_conversations")
 	helper.Copy(up.Bool, "history_sync", "request_full_sync")

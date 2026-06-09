@@ -23,6 +23,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 
+	"go.mau.fi/mautrix-whatsapp/pkg/connector/backfillprogress"
 	"go.mau.fi/mautrix-whatsapp/pkg/connector/wadb"
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
@@ -545,7 +546,9 @@ func (wa *WhatsAppClient) FetchMessages(ctx context.Context, params bridgev2.Fet
 			}
 		}
 	}
-	resp, err := wa.convertHistorySyncMessages(ctx, params.Portal, portalJID, messages, true)
+	// Only report progress for backwards (on-demand "Load more") backfill; forward
+	// backfill happens at room creation for many rooms nobody is watching yet.
+	resp, err := wa.convertHistorySyncMessages(ctx, params.Portal, portalJID, messages, true, !params.Forward, hasMore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert messages: %w", err)
 	}
@@ -581,18 +584,45 @@ func (wa *WhatsAppClient) deleteHistorySyncMessages(ctx context.Context, portalJ
 	}
 }
 
+func (wa *WhatsAppClient) publishBackfillProgress(ctx context.Context, portal *bridgev2.Portal, phase string, current, total, loaded int, hasMore bool) {
+	if portal == nil || portal.MXID == "" {
+		return
+	}
+	// Safe to call on a nil publisher (the method guards internally).
+	wa.Main.BackfillProgress.Publish(ctx, backfillprogress.Update{
+		OwnerMXID:    wa.UserLogin.User.MXID,
+		MatrixRoomID: portal.MXID,
+		Phase:        phase,
+		Current:      current,
+		Total:        total,
+		Loaded:       loaded,
+		HasMore:      hasMore,
+	})
+}
+
 func (wa *WhatsAppClient) convertHistorySyncMessages(
 	ctx context.Context,
 	portal *bridgev2.Portal,
 	portalJID types.JID,
 	messages []*waWeb.WebMessageInfo,
 	explodeOnError bool,
+	reportProgress bool,
+	hasMore bool,
 ) (*bridgev2.FetchMessagesResponse, error) {
 	oldestTS := messages[len(messages)-1].GetMessageTimestamp()
 	newestTS := messages[0].GetMessageTimestamp()
 	convertedMessages := make([]*bridgev2.BackfillMessage, 0, len(messages))
 	var mediaRequests []*wadb.MediaRequest
+	total := len(messages)
+	// Emit a progress tick at most ~20 times across the batch.
+	progressEvery := total/20 + 1
+	if reportProgress {
+		wa.publishBackfillProgress(ctx, portal, backfillprogress.PhaseStarted, 0, total, 0, false)
+	}
 	for i, msg := range messages {
+		if reportProgress && (i+1)%progressEvery == 0 {
+			wa.publishBackfillProgress(ctx, portal, backfillprogress.PhaseProgress, i+1, total, 0, false)
+		}
 		evt, err := wa.Client.ParseWebMessage(portalJID, msg)
 		if err != nil {
 			if explodeOnError {
@@ -626,6 +656,13 @@ func (wa *WhatsAppClient) convertHistorySyncMessages(
 		Messages: convertedMessages,
 		Cursor:   networkid.PaginationCursor(strconv.FormatUint(oldestTS, 10)),
 		CompleteCallback: func() {
+			// Runs after the batch is actually inserted into Matrix — the correct
+			// moment to tell the UI the history is now loadable.
+			if reportProgress {
+				// hasMore=false here means we've reached the true start of the chat
+				// (local pool empty AND nothing older on the phone).
+				wa.publishBackfillProgress(ctx, portal, backfillprogress.PhaseFinished, total, total, len(convertedMessages), hasMore)
+			}
 			// TODO this only deletes after backfilling. If there's no need for backfill after a relogin,
 			//      the messages will be stuck in the database
 			wa.deleteHistorySyncMessages(ctx, portalJID, newestTS, oldestTS)
@@ -723,7 +760,7 @@ func (wa *WhatsAppClient) handleOnDemandHistorySync(ctx context.Context, blob *w
 					Int("message_count", len(messages)).
 					Stringer("end_of_history_type", conv.GetEndOfHistoryTransferType()).
 					Msg("Converting messages to bridge from on-demand history sync")
-				resp, err := wa.convertHistorySyncMessages(ctx, portal, portalJID, messages, false)
+				resp, err := wa.convertHistorySyncMessages(ctx, portal, portalJID, messages, false, false, false)
 				if err != nil {
 					return nil, err
 				}

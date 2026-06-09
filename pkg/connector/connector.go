@@ -46,6 +46,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
+	"go.mau.fi/mautrix-whatsapp/pkg/connector/backfillprogress"
 	"go.mau.fi/mautrix-whatsapp/pkg/connector/discoverycommand"
 	"go.mau.fi/mautrix-whatsapp/pkg/connector/wadb"
 	"go.mau.fi/mautrix-whatsapp/pkg/msgconv"
@@ -67,6 +68,7 @@ type WhatsAppConnector struct {
 	stopMediaEditCacheLoop atomic.Pointer[context.CancelFunc]
 
 	DiscoveryCommand *discoverycommand.Publisher
+	BackfillProgress *backfillprogress.Publisher
 }
 
 func init() {
@@ -174,6 +176,23 @@ func (wa *WhatsAppConnector) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to initialize discovery command publisher: %w", err)
 		}
 		wa.DiscoveryCommand = publisher
+	}
+
+	// Backfill progress publisher. Reuses the discovery Redis connection by default
+	// so a single `discovery_redis_url` enables both.
+	progressRedisURL := wa.Config.Synccontact.BackfillProgressRedisURL
+	if progressRedisURL == "" {
+		progressRedisURL = wa.Config.Synccontact.DiscoveryRedisURL
+	}
+	if progressRedisURL != "" {
+		progressPublisher, err := backfillprogress.New(backfillprogress.Config{
+			RedisURL: progressRedisURL,
+			Stream:   wa.Config.Synccontact.BackfillProgressStream,
+		}, zerolog.Ctx(ctx).With().Logger())
+		if err != nil {
+			return fmt.Errorf("failed to initialize backfill progress publisher: %w", err)
+		}
+		wa.BackfillProgress = progressPublisher
 	}
 
 	return nil
