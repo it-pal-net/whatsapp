@@ -83,8 +83,14 @@ func MakeMessageID(chat, sender types.JID, id types.MessageID) networkid.Message
 	return networkid.MessageID(fmt.Sprintf("%s:%s:%s", chat.ToNonAD().String(), sender.ToNonAD().String(), id))
 }
 
+const fakeMessageIDPrefix = "fake:"
+
 func MakeFakeMessageID(chat, sender types.JID, data string) networkid.MessageID {
-	return networkid.MessageID(fmt.Sprintf("fake:%s:%s:%s", chat.ToNonAD().String(), sender.ToNonAD().String(), data))
+	return networkid.MessageID(fmt.Sprintf("%s%s:%s:%s", fakeMessageIDPrefix, chat.ToNonAD().String(), sender.ToNonAD().String(), data))
+}
+
+func IsFakeMessageID(messageID networkid.MessageID) bool {
+	return strings.HasPrefix(string(messageID), fakeMessageIDPrefix)
 }
 
 type ParsedMessageID struct {

@@ -76,6 +76,9 @@ func (wa *WhatsAppClient) HandleMatrixPollVote(ctx context.Context, msg *bridgev
 }
 
 func (wa *WhatsAppClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
+	if isInternalMessage(msg.Content) {
+		return wa.handleInternalMatrixMessage(msg)
+	}
 	waMsg, req, err := wa.Main.MsgConv.ToWhatsApp(ctx, wa.Client, msg.Event, msg.Content, msg.ReplyTo, msg.ThreadRoot, msg.Portal)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert message: %w", err)
@@ -155,6 +158,14 @@ func (wa *WhatsAppClient) PreHandleMatrixReaction(_ context.Context, msg *bridge
 }
 
 func (wa *WhatsAppClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (*database.Reaction, error) {
+	if isInternalDBMessage(msg.TargetMessage) {
+		// Reactions to internal notes stay on the Matrix side.
+		return &database.Reaction{
+			Metadata: &waid.ReactionMetadata{
+				SenderDeviceID: wa.JID.Device,
+			},
+		}, nil
+	}
 	messageID, err := waid.ParseMessageID(msg.TargetMessage.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse target message ID: %w", err)
@@ -193,6 +204,11 @@ func (wa *WhatsAppClient) HandleMatrixReaction(ctx context.Context, msg *bridgev
 }
 
 func (wa *WhatsAppClient) HandleMatrixReactionRemove(ctx context.Context, msg *bridgev2.MatrixReactionRemove) error {
+	if waid.IsFakeMessageID(msg.TargetReaction.MessageID) {
+		// The reaction targets a message that never existed on WhatsApp
+		// (e.g. an internal note), so there is nothing to remove there.
+		return nil
+	}
 	messageID, err := waid.ParseMessageID(msg.TargetReaction.MessageID)
 	if err != nil {
 		return fmt.Errorf("failed to parse target message ID: %w", err)
@@ -222,6 +238,16 @@ func (wa *WhatsAppClient) HandleMatrixReactionRemove(ctx context.Context, msg *b
 }
 
 func (wa *WhatsAppClient) HandleMatrixEdit(ctx context.Context, edit *bridgev2.MatrixEdit) error {
+	if isInternalDBMessage(edit.EditTarget) {
+		// Internal notes only exist on the Matrix side; accept the edit
+		// without contacting WhatsApp.
+		return nil
+	}
+	if isInternalMessage(edit.Content) {
+		// The original was already delivered to WhatsApp, so relaying the
+		// edit would expose the "!"-prefixed text to the WhatsApp user.
+		return ErrInternalEditOfRelayedMessage
+	}
 	log := zerolog.Ctx(ctx)
 
 	var editID types.MessageID
@@ -260,6 +286,11 @@ func (wa *WhatsAppClient) HandleMatrixEdit(ctx context.Context, edit *bridgev2.M
 }
 
 func (wa *WhatsAppClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
+	if isInternalDBMessage(msg.TargetMessage) {
+		// Internal notes were never sent to WhatsApp, so a Matrix redaction
+		// is complete on its own.
+		return nil
+	}
 	log := zerolog.Ctx(ctx)
 	messageID, err := waid.ParseMessageID(msg.TargetMessage.ID)
 	if err != nil {

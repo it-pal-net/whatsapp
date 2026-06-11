@@ -88,6 +88,10 @@ type MessageMetadata struct {
 	DirectMediaMeta  json.RawMessage   `json:"direct_media_meta,omitempty"`
 	IsMatrixPoll     bool              `json:"is_matrix_poll,omitempty"`
 	Edits            []types.MessageID `json:"edits,omitempty"`
+	// Internal marks a Matrix message that was intentionally never sent to
+	// WhatsApp (e.g. "!"-prefixed internal notes). Edits, redactions and
+	// reactions targeting such messages must not be relayed either.
+	Internal bool `json:"internal,omitempty"`
 }
 
 func (mm *MessageMetadata) CopyFrom(other any) {
@@ -107,6 +111,7 @@ func (mm *MessageMetadata) CopyFrom(other any) {
 		mm.GroupInvite = otherMM.GroupInvite
 	}
 	mm.IsMatrixPoll = mm.IsMatrixPoll || otherMM.IsMatrixPoll
+	mm.Internal = mm.Internal || otherMM.Internal
 }
 
 type ReactionMetadata struct {
