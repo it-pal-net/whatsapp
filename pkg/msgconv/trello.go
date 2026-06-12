@@ -56,6 +56,36 @@ func (card *TrelloCard) getLocationLine() string {
 	return strings.Join(parts, " · ")
 }
 
+// getSharedAttachmentCaption returns the user-typed caption of a shared
+// attachment message. The web app puts either the user's text or a generated
+// fallback ("Shared Trello card: …", "Shared contact: …") in the body, so the
+// body only counts as a caption when it differs from the fallback.
+func getSharedAttachmentCaption(body, fallbackBody string) string {
+	if body == fallbackBody {
+		return ""
+	}
+	return body
+}
+
+// getTrelloCardsFallbackBody mirrors getFallbackForCards in the web app's
+// trelloAttachments.js, which generates the body when the user typed nothing.
+func getTrelloCardsFallbackBody(cards []TrelloCard) string {
+	names := make([]string, 0, len(cards))
+	for _, card := range cards {
+		if card.Name != "" {
+			names = append(names, card.Name)
+		}
+	}
+	switch len(names) {
+	case 0:
+		return "Shared Trello cards"
+	case 1:
+		return "Shared Trello card: " + names[0]
+	default:
+		return "Shared Trello cards: " + strings.Join(names, ", ")
+	}
+}
+
 func parseTrelloCardsMeta(raw map[string]any) (*TrelloCardsMeta, error) {
 	rawMeta, ok := raw[TrelloCardsMsgType]
 	if !ok {
@@ -116,7 +146,11 @@ func (mc *MessageConverter) constructTrelloCardsMessage(
 			Msg("Trello cards message has no usable card meta, sending plain body text")
 		return &waE2E.Message{ExtendedTextMessage: etm}
 	}
-	etm.Text = proto.String(formatTrelloCardsText(meta.Cards))
+	text := formatTrelloCardsText(meta.Cards)
+	if caption := getSharedAttachmentCaption(content.Body, getTrelloCardsFallbackBody(meta.Cards)); caption != "" {
+		text = caption + "\n\n" + text
+	}
+	etm.Text = proto.String(text)
 	if len(meta.Cards) == 1 {
 		card := meta.Cards[0]
 		if url := card.getPreferredURL(); url != "" {

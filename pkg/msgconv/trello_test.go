@@ -80,6 +80,37 @@ func TestConstructTrelloCardsMessage_SingleCard(t *testing.T) {
 	}
 }
 
+func TestConstructTrelloCardsMessage_UserCaption(t *testing.T) {
+	raw := parseTestRawContent(t, exampleTrelloRawContent)
+	content := &event.MessageEventContent{
+		MsgType: TrelloCardsMsgType,
+		Body:    "test message",
+	}
+	mc := &MessageConverter{}
+
+	msg := mc.constructTrelloCardsMessage(context.Background(), content, raw, nil)
+	expectedText := "test message\n\n" +
+		"📋 *📊 HR Analytics Dashboard*\n" +
+		"☣️ ChronosLocalDev · Done 🎉\n" +
+		"https://trello.com/c/QTlWT1Dg"
+	if text := msg.GetExtendedTextMessage().GetText(); text != expectedText {
+		t.Errorf("unexpected text:\n%q\nwant:\n%q", text, expectedText)
+	}
+}
+
+func TestGetTrelloCardsFallbackBody(t *testing.T) {
+	cards := []TrelloCard{{Name: "First"}, {Name: "Second"}}
+	if fallback := getTrelloCardsFallbackBody(cards); fallback != "Shared Trello cards: First, Second" {
+		t.Errorf("unexpected multi-card fallback: %q", fallback)
+	}
+	if fallback := getTrelloCardsFallbackBody(cards[:1]); fallback != "Shared Trello card: First" {
+		t.Errorf("unexpected single-card fallback: %q", fallback)
+	}
+	if fallback := getTrelloCardsFallbackBody(nil); fallback != "Shared Trello cards" {
+		t.Errorf("unexpected empty fallback: %q", fallback)
+	}
+}
+
 func TestFormatTrelloCardsText_MultipleAndArchived(t *testing.T) {
 	cards := []TrelloCard{
 		{
