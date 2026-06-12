@@ -125,6 +125,12 @@ type PortalMetadata struct {
 	CommunityAnnouncementGroup bool                 `json:"is_cag,omitempty"`
 	AddressingMode             types.AddressingMode `json:"addressing_mode,omitempty"`
 	LIDMigrationAttempted      bool                 `json:"lid_migration_attempted,omitempty"`
+	// AllowMessageDeletion lets WhatsApp "delete for everyone" actually redact
+	// the bridged Matrix message in this portal. Off by default: blocked revokes
+	// are bridged as an edit that only marks the message as deleted, so the
+	// SyncContact timeline keeps the content. Toggled per room via the
+	// /v3/portals/{roomID}/settings provisioning endpoint.
+	AllowMessageDeletion bool `json:"allow_message_deletion,omitempty"`
 }
 
 type GhostMetadata struct {

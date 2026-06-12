@@ -92,7 +92,11 @@ type WAMessageEvent struct {
 	parsedMessageType             string
 	isUndecryptableUpsertSubEvent bool
 	dontRenderEdited              bool
-	postHandle                    func()
+	// revokeBlocked turns a "revoke" into a deletion-marker edit instead of a
+	// Matrix redaction (see messagedeletion.go). Decided when the event is
+	// queued so GetType stays stable for the whole handling pipeline.
+	revokeBlocked bool
+	postHandle    func()
 }
 
 var (
@@ -180,6 +184,9 @@ func (evt *WAMessageEvent) PostHandle(ctx context.Context, portal *bridgev2.Port
 }
 
 func (evt *WAMessageEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message) (*bridgev2.ConvertedEdit, error) {
+	if evt.revokeBlocked {
+		return evt.convertBlockedRevokeToEdit(existing)
+	}
 	if len(existing) > 1 {
 		zerolog.Ctx(ctx).Warn().Msg("Got edit to message with multiple parts")
 	}
@@ -257,6 +264,9 @@ func (evt *WAMessageEvent) GetType() bridgev2.RemoteEventType {
 	case "edit":
 		return bridgev2.RemoteEventEdit
 	case "revoke":
+		if evt.revokeBlocked {
+			return bridgev2.RemoteEventEdit
+		}
 		return bridgev2.RemoteEventMessageRemove
 	case "ignore":
 		return bridgev2.RemoteEventUnknown

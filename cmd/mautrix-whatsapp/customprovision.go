@@ -13,9 +13,12 @@ import (
 	"github.com/rs/zerolog/hlog"
 	"go.mau.fi/util/exhttp"
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/id"
+
+	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
 
 // deleteLoginPortals deletes all Matrix portal rooms owned by a given login.
@@ -134,6 +137,89 @@ func setPortalRelay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	exhttp.WriteJSONResponse(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// PortalSettings is the wire format of the per-portal settings endpoints. It
+// currently only carries the message-deletion override: WhatsApp "delete for
+// everyone" is blocked by default and only redacts the bridged Matrix message
+// when allow_message_deletion is true (see pkg/connector/messagedeletion.go).
+type PortalSettings struct {
+	AllowMessageDeletion bool `json:"allow_message_deletion"`
+}
+
+func loadPortalForProvisioning(w http.ResponseWriter, r *http.Request) *bridgev2.Portal {
+	roomID := id.RoomID(r.PathValue("roomID"))
+	if roomID == "" {
+		mautrix.MInvalidParam.WithMessage("Missing room ID").Write(w)
+		return nil
+	}
+
+	user := m.Matrix.Provisioning.GetUser(r)
+	if user == nil {
+		mautrix.MForbidden.WithMessage("Authenticated user not found").Write(w)
+		return nil
+	}
+
+	portal, err := m.Bridge.GetPortalByMXID(r.Context(), roomID)
+	if err != nil {
+		hlog.FromRequest(r).Err(err).Str("room_id", string(roomID)).Msg("Failed to load portal by Matrix room ID")
+		matrix.RespondWithError(w, err, "Internal error loading portal")
+		return nil
+	} else if portal == nil || portal.MXID == "" {
+		mautrix.MNotFound.WithMessage("Portal not found").Write(w)
+		return nil
+	}
+
+	return portal
+}
+
+func getPortalSettings(w http.ResponseWriter, r *http.Request) {
+	portal := loadPortalForProvisioning(w, r)
+	if portal == nil {
+		return
+	}
+
+	meta, ok := portal.Metadata.(*waid.PortalMetadata)
+	if !ok {
+		mautrix.MNotFound.WithMessage("Portal has no WhatsApp metadata").Write(w)
+		return
+	}
+
+	exhttp.WriteJSONResponse(w, http.StatusOK, PortalSettings{
+		AllowMessageDeletion: meta.AllowMessageDeletion,
+	})
+}
+
+func setPortalSettings(w http.ResponseWriter, r *http.Request) {
+	portal := loadPortalForProvisioning(w, r)
+	if portal == nil {
+		return
+	}
+
+	var req PortalSettings
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		mautrix.MBadJSON.WithMessage("Invalid JSON body").Write(w)
+		return
+	}
+
+	meta, ok := portal.Metadata.(*waid.PortalMetadata)
+	if !ok {
+		mautrix.MNotFound.WithMessage("Portal has no WhatsApp metadata").Write(w)
+		return
+	}
+
+	meta.AllowMessageDeletion = req.AllowMessageDeletion
+	err = portal.Save(r.Context())
+	if err != nil {
+		hlog.FromRequest(r).Err(err).Stringer("portal_mxid", portal.MXID).Msg("Failed to save portal settings")
+		matrix.RespondWithError(w, err, "Internal error saving portal settings")
+		return
+	}
+
+	exhttp.WriteJSONResponse(w, http.StatusOK, PortalSettings{
+		AllowMessageDeletion: meta.AllowMessageDeletion,
+	})
 }
 
 // deletePortal mirrors the `delete-portal` bridge command: it removes the

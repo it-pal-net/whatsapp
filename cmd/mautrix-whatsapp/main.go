@@ -53,6 +53,14 @@ func main() {
 				setPortalRelay,
 			)
 			m.Matrix.Provisioning.Router.HandleFunc(
+				"GET /v3/portals/{roomID}/settings",
+				getPortalSettings,
+			)
+			m.Matrix.Provisioning.Router.HandleFunc(
+				"PUT /v3/portals/{roomID}/settings",
+				setPortalSettings,
+			)
+			m.Matrix.Provisioning.Router.HandleFunc(
 				"DELETE /v3/portals/{roomID}",
 				deletePortal,
 			)

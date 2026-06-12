@@ -399,6 +399,8 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 
 		parsedMessageType: parsedMessageType,
 		dontRenderEdited:  dontRenderEdited,
+		revokeBlocked: parsedMessageType == "revoke" &&
+			!wa.isMessageDeletionAllowed(ctx, evt.Info.MessageSource),
 	})
 	return res.Success
 }
