@@ -29,23 +29,59 @@ import (
 	"maunium.net/go/mautrix/event"
 )
 
+// LiveLocationExtraField marks an m.location event as the start of a live
+// location share. The bridge only receives the initial position — WhatsApp
+// distributes the follow-up updates through a channel whatsmeow doesn't
+// deliver — so clients should present the pin as a starting point.
+const LiveLocationExtraField = "com.synccontact.live_location"
+
+func getLocationName(name string, lat, lng float64) string {
+	if len(name) > 0 {
+		return name
+	}
+	latChar := 'N'
+	if lat < 0 {
+		latChar = 'S'
+	}
+	longChar := 'E'
+	if lng < 0 {
+		longChar = 'W'
+	}
+	return fmt.Sprintf("%.4f° %c %.4f° %c", math.Abs(lat), latChar, math.Abs(lng), longChar)
+}
+
+func getLocationURL(url string, lat, lng float64) string {
+	if len(url) > 0 {
+		return url
+	}
+	return fmt.Sprintf("https://maps.google.com/?q=%.5f,%.5f", lat, lng)
+}
+
+func attachLocationThumbnail(ctx context.Context, content *event.MessageEventContent, jpegThumbnail []byte) {
+	if len(jpegThumbnail) == 0 {
+		return
+	}
+	thumbnailMime := http.DetectContentType(jpegThumbnail)
+	thumbnailURL, thumbnailFile, err := getIntent(ctx).UploadMedia(ctx, getPortal(ctx).MXID, jpegThumbnail, "thumb.jpeg", thumbnailMime)
+	if err != nil {
+		return
+	}
+	cfg, _, _ := image.DecodeConfig(bytes.NewReader(jpegThumbnail))
+	content.Info = &event.FileInfo{
+		ThumbnailInfo: &event.FileInfo{
+			Size:     len(jpegThumbnail),
+			Width:    cfg.Width,
+			Height:   cfg.Height,
+			MimeType: thumbnailMime,
+		},
+		ThumbnailURL:  thumbnailURL,
+		ThumbnailFile: thumbnailFile,
+	}
+}
+
 func (mc *MessageConverter) convertLocationMessage(ctx context.Context, msg *waE2E.LocationMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
-	url := msg.GetURL()
-	if len(url) == 0 {
-		url = fmt.Sprintf("https://maps.google.com/?q=%.5f,%.5f", msg.GetDegreesLatitude(), msg.GetDegreesLongitude())
-	}
-	name := msg.GetName()
-	if len(name) == 0 {
-		latChar := 'N'
-		if msg.GetDegreesLatitude() < 0 {
-			latChar = 'S'
-		}
-		longChar := 'E'
-		if msg.GetDegreesLongitude() < 0 {
-			longChar = 'W'
-		}
-		name = fmt.Sprintf("%.4f° %c %.4f° %c", math.Abs(msg.GetDegreesLatitude()), latChar, math.Abs(msg.GetDegreesLongitude()), longChar)
-	}
+	url := getLocationURL(msg.GetURL(), msg.GetDegreesLatitude(), msg.GetDegreesLongitude())
+	name := getLocationName(msg.GetName(), msg.GetDegreesLatitude(), msg.GetDegreesLongitude())
 
 	content := &event.MessageEventContent{
 		MsgType:       event.MsgLocation,
@@ -54,24 +90,7 @@ func (mc *MessageConverter) convertLocationMessage(ctx context.Context, msg *waE
 		FormattedBody: fmt.Sprintf("Location: <a href='%s'>%s</a><br>%s", url, name, msg.GetAddress()),
 		GeoURI:        fmt.Sprintf("geo:%.5f,%.5f", msg.GetDegreesLatitude(), msg.GetDegreesLongitude()),
 	}
-
-	if len(msg.GetJPEGThumbnail()) > 0 {
-		thumbnailMime := http.DetectContentType(msg.GetJPEGThumbnail())
-		thumbnailURL, thumbnailFile, err := getIntent(ctx).UploadMedia(ctx, getPortal(ctx).MXID, msg.GetJPEGThumbnail(), "thumb.jpeg", thumbnailMime)
-		if err == nil {
-			cfg, _, _ := image.DecodeConfig(bytes.NewReader(msg.GetJPEGThumbnail()))
-			content.Info = &event.FileInfo{
-				ThumbnailInfo: &event.FileInfo{
-					Size:     len(msg.GetJPEGThumbnail()),
-					Width:    cfg.Width,
-					Height:   cfg.Height,
-					MimeType: thumbnailMime,
-				},
-				ThumbnailURL:  thumbnailURL,
-				ThumbnailFile: thumbnailFile,
-			}
-		}
-	}
+	attachLocationThumbnail(ctx, content, msg.GetJPEGThumbnail())
 
 	return &bridgev2.ConvertedMessagePart{
 		Type:    event.EventMessage,
@@ -80,16 +99,23 @@ func (mc *MessageConverter) convertLocationMessage(ctx context.Context, msg *waE
 }
 
 func (mc *MessageConverter) convertLiveLocationMessage(ctx context.Context, msg *waE2E.LiveLocationMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
+	url := getLocationURL("", msg.GetDegreesLatitude(), msg.GetDegreesLongitude())
+	name := getLocationName(msg.GetCaption(), msg.GetDegreesLatitude(), msg.GetDegreesLongitude())
+
 	content := &event.MessageEventContent{
-		Body:    "Started sharing live location",
-		MsgType: event.MsgNotice,
+		MsgType:       event.MsgLocation,
+		Body:          fmt.Sprintf("Live location: %s\n%s", name, url),
+		Format:        event.FormatHTML,
+		FormattedBody: fmt.Sprintf("Live location: <a href='%s'>%s</a>", url, name),
+		GeoURI:        fmt.Sprintf("geo:%.5f,%.5f", msg.GetDegreesLatitude(), msg.GetDegreesLongitude()),
 	}
-	if len(msg.GetCaption()) > 0 {
-		content.Body += ": " + msg.GetCaption()
-	}
-	content.Body += "\n\nUse the WhatsApp app to see the location."
+	attachLocationThumbnail(ctx, content, msg.GetJPEGThumbnail())
+
 	return &bridgev2.ConvertedMessagePart{
 		Type:    event.EventMessage,
 		Content: content,
+		Extra: map[string]any{
+			LiveLocationExtraField: true,
+		},
 	}, msg.GetContextInfo()
 }
