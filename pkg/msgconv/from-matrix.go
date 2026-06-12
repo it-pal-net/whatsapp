@@ -124,6 +124,8 @@ func (mc *MessageConverter) ToWhatsApp(
 		message = mc.constructMediaMessage(ctx, content, evt, uploaded, thumbnail, contextInfo, mime)
 	case TrelloCardsMsgType:
 		message = mc.constructTrelloCardsMessage(ctx, content, evt.Content.Raw, contextInfo)
+	case AddressbookContactsMsgType:
+		message = mc.constructAddressbookContactsMessage(ctx, content, evt.Content.Raw, contextInfo)
 	case event.MsgLocation:
 		lat, long, err := parseGeoURI(content.GeoURI)
 		if err != nil {

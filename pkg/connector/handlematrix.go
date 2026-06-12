@@ -83,7 +83,38 @@ func (wa *WhatsAppClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert message: %w", err)
 	}
-	return wa.handleConvertedMatrixMessage(ctx, msg, waMsg, req)
+	resp, err := wa.handleConvertedMatrixMessage(ctx, msg, waMsg, req)
+	if err != nil {
+		return nil, err
+	}
+	wa.sendAddressbookContactsCaption(ctx, msg)
+	return resp, nil
+}
+
+// sendAddressbookContactsCaption sends the user-typed caption of a
+// shared-contacts message as a separate text message, since WhatsApp contact
+// messages can't carry text. Failures only log: the contact cards themselves
+// were already delivered.
+func (wa *WhatsAppClient) sendAddressbookContactsCaption(ctx context.Context, msg *bridgev2.MatrixMessage) {
+	if msg.Content.MsgType != msgconv.AddressbookContactsMsgType {
+		return
+	}
+	captionMsg := wa.Main.MsgConv.AddressbookContactsCaptionToWhatsApp(ctx, msg.Content, msg.Event.Content.Raw, msg.Portal)
+	if captionMsg == nil {
+		return
+	}
+	log := zerolog.Ctx(ctx)
+	chatJID, err := waid.ParsePortalID(msg.Portal.ID)
+	if err != nil {
+		log.Err(err).Msg("Failed to parse portal ID for shared contacts caption")
+		return
+	}
+	req := whatsmeow.SendRequestExtra{ID: wa.Client.GenerateMessageID()}
+	msg.AddPendingToIgnore(networkid.TransactionID(waid.MakeMessageID(chatJID, wa.JID, req.ID)))
+	msg.AddPendingToIgnore(networkid.TransactionID(waid.MakeMessageID(chatJID, wa.GetStore().GetLID(), req.ID)))
+	if _, err = wa.Client.SendMessage(ctx, chatJID, captionMsg, req); err != nil {
+		log.Err(err).Msg("Failed to send caption for shared contacts message")
+	}
 }
 
 var ErrBroadcastSendDisabled = bridgev2.WrapErrorInStatus(errors.New("sending status messages is disabled")).WithErrorAsMessage().WithIsCertain(true).WithSendNotice(true).WithErrorReason(event.MessageStatusUnsupported)
