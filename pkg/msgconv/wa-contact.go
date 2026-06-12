@@ -19,6 +19,7 @@ package msgconv
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -26,26 +27,25 @@ import (
 	"maunium.net/go/mautrix/event"
 )
 
-func (mc *MessageConverter) convertContactMessage(ctx context.Context, msg *waE2E.ContactMessage) (part *bridgev2.ConvertedMessagePart, contextInfo *waE2E.ContextInfo) {
-	fileName := fmt.Sprintf("%s.vcf", msg.GetDisplayName())
-	data := []byte(msg.GetVcard())
-	mimeType := "text/vcard"
-	contextInfo = msg.GetContextInfo()
+// convertVcardToFilePart uploads raw vCard data and wraps it in the m.file
+// message the web timeline renders as a contact card.
+func (mc *MessageConverter) convertVcardToFilePart(ctx context.Context, displayName string, data []byte) *bridgev2.ConvertedMessagePart {
+	fileName := fmt.Sprintf("%s.vcf", displayName)
+	const mimeType = "text/vcard"
 
 	mxc, file, err := getIntent(ctx).UploadMedia(ctx, getPortal(ctx).MXID, data, fileName, mimeType)
 	if err != nil {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to reupload WhatsApp contact message")
-		part = &bridgev2.ConvertedMessagePart{
+		return &bridgev2.ConvertedMessagePart{
 			Type: event.EventMessage,
 			Content: &event.MessageEventContent{
 				MsgType: event.MsgNotice,
 				Body:    "Failed to reupload vcard",
 			},
 		}
-		return
 	}
 
-	part = &bridgev2.ConvertedMessagePart{
+	return &bridgev2.ConvertedMessagePart{
 		Type: event.EventMessage,
 		Content: &event.MessageEventContent{
 			Body:     fileName,
@@ -53,23 +53,58 @@ func (mc *MessageConverter) convertContactMessage(ctx context.Context, msg *waE2
 			URL:      mxc,
 			Info: &event.FileInfo{
 				MimeType: mimeType,
-				Size:     len(msg.GetVcard()),
+				Size:     len(data),
 			},
 			File:    file,
 			MsgType: event.MsgFile,
 		},
 		Extra: make(map[string]any),
 	}
+}
 
-	return
+func (mc *MessageConverter) convertContactMessage(ctx context.Context, msg *waE2E.ContactMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
+	part := mc.convertVcardToFilePart(ctx, msg.GetDisplayName(), []byte(msg.GetVcard()))
+	return part, msg.GetContextInfo()
+}
+
+// joinContactVcards concatenates the vCards of a contacts array message into a
+// single .vcf stream (RFC 6350 allows multiple VCARD blocks per file). Returns
+// nil when no contact carries a vCard.
+func joinContactVcards(contacts []*waE2E.ContactMessage) []byte {
+	vcards := make([]string, 0, len(contacts))
+	for _, contact := range contacts {
+		if vcard := strings.TrimSpace(contact.GetVcard()); vcard != "" {
+			vcards = append(vcards, vcard)
+		}
+	}
+	if len(vcards) == 0 {
+		return nil
+	}
+	return []byte(strings.Join(vcards, "\r\n") + "\r\n")
+}
+
+// getContactsArrayDisplayName mirrors WhatsApp's own naming ("Alice and 2
+// other contacts") with a count-based fallback, and doubles as the .vcf
+// filename.
+func getContactsArrayDisplayName(msg *waE2E.ContactsArrayMessage) string {
+	if displayName := strings.TrimSpace(msg.GetDisplayName()); displayName != "" {
+		return displayName
+	}
+	return fmt.Sprintf("%d contacts", len(msg.GetContacts()))
 }
 
 func (mc *MessageConverter) convertContactsArrayMessage(ctx context.Context, msg *waE2E.ContactsArrayMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
-	return &bridgev2.ConvertedMessagePart{
-		Type: event.EventMessage,
-		Content: &event.MessageEventContent{
-			MsgType: event.MsgNotice,
-			Body:    "Contact array messages are not yet supported",
-		},
-	}, msg.GetContextInfo()
+	data := joinContactVcards(msg.GetContacts())
+	if data == nil {
+		return &bridgev2.ConvertedMessagePart{
+			Type: event.EventMessage,
+			Content: &event.MessageEventContent{
+				MsgType: event.MsgNotice,
+				Body:    "Received a contact array message without any contacts",
+			},
+		}, msg.GetContextInfo()
+	}
+
+	part := mc.convertVcardToFilePart(ctx, getContactsArrayDisplayName(msg), data)
+	return part, msg.GetContextInfo()
 }
