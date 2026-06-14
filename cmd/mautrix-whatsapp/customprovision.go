@@ -139,12 +139,15 @@ func setPortalRelay(w http.ResponseWriter, r *http.Request) {
 	exhttp.WriteJSONResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// PortalSettings is the wire format of the per-portal settings endpoints. It
-// currently only carries the message-deletion override: WhatsApp "delete for
-// everyone" is blocked by default and only redacts the bridged Matrix message
-// when allow_message_deletion is true (see pkg/connector/messagedeletion.go).
+// PortalSettings is the wire format of the per-portal settings endpoints.
+// allow_message_deletion: WhatsApp "delete for everyone" is blocked by default
+// and only redacts the bridged Matrix message when true (see
+// pkg/connector/messagedeletion.go). respect_disappearing_timer:
+// disappearing-timer expiry keeps bridged messages by default and only redacts
+// them when true (see disappearfilter.go).
 type PortalSettings struct {
-	AllowMessageDeletion bool `json:"allow_message_deletion"`
+	AllowMessageDeletion     bool `json:"allow_message_deletion"`
+	RespectDisappearingTimer bool `json:"respect_disappearing_timer"`
 }
 
 func loadPortalForProvisioning(w http.ResponseWriter, r *http.Request) *bridgev2.Portal {
@@ -186,7 +189,8 @@ func getPortalSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	exhttp.WriteJSONResponse(w, http.StatusOK, PortalSettings{
-		AllowMessageDeletion: meta.AllowMessageDeletion,
+		AllowMessageDeletion:     meta.AllowMessageDeletion,
+		RespectDisappearingTimer: meta.RespectDisappearingTimer,
 	})
 }
 
@@ -196,20 +200,26 @@ func setPortalSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req PortalSettings
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		mautrix.MBadJSON.WithMessage("Invalid JSON body").Write(w)
-		return
-	}
-
 	meta, ok := portal.Metadata.(*waid.PortalMetadata)
 	if !ok {
 		mautrix.MNotFound.WithMessage("Portal has no WhatsApp metadata").Write(w)
 		return
 	}
 
+	// Partial update: fields absent from the body keep their current value
+	// instead of being reset to the zero value.
+	req := PortalSettings{
+		AllowMessageDeletion:     meta.AllowMessageDeletion,
+		RespectDisappearingTimer: meta.RespectDisappearingTimer,
+	}
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		mautrix.MBadJSON.WithMessage("Invalid JSON body").Write(w)
+		return
+	}
+
 	meta.AllowMessageDeletion = req.AllowMessageDeletion
+	meta.RespectDisappearingTimer = req.RespectDisappearingTimer
 	err = portal.Save(r.Context())
 	if err != nil {
 		hlog.FromRequest(r).Err(err).Stringer("portal_mxid", portal.MXID).Msg("Failed to save portal settings")
@@ -218,7 +228,8 @@ func setPortalSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	exhttp.WriteJSONResponse(w, http.StatusOK, PortalSettings{
-		AllowMessageDeletion: meta.AllowMessageDeletion,
+		AllowMessageDeletion:     meta.AllowMessageDeletion,
+		RespectDisappearingTimer: meta.RespectDisappearingTimer,
 	})
 }
 

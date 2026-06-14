@@ -131,6 +131,13 @@ type PortalMetadata struct {
 	// SyncContact timeline keeps the content. Toggled per room via the
 	// /v3/portals/{roomID}/settings provisioning endpoint.
 	AllowMessageDeletion bool `json:"allow_message_deletion,omitempty"`
+	// RespectDisappearingTimer lets the disappearing-message timer redact
+	// expired bridged messages in this portal like it does on WhatsApp. Off by
+	// default: the timer still runs on the WhatsApp side, but the SyncContact
+	// timeline keeps the messages (the DisappearLoop redactions are dropped in
+	// cmd/mautrix-whatsapp/disappearfilter.go). Toggled per room via the
+	// /v3/portals/{roomID}/settings provisioning endpoint.
+	RespectDisappearingTimer bool `json:"respect_disappearing_timer,omitempty"`
 }
 
 type GhostMetadata struct {

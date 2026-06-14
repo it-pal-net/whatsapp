@@ -24,6 +24,16 @@ var m = mxmain.BridgeMain{
 }
 
 func main() {
+	m.PostInit = func() {
+		// Installed before the bridge starts so the DisappearLoop never redacts
+		// through the raw bot: timer-expired messages stay in the SyncContact
+		// timeline unless the portal opts back in via respect_disappearing_timer
+		// (see disappearfilter.go).
+		m.Bridge.Bot = &disappearFilteringBot{
+			MatrixAPI: m.Bridge.Bot,
+			bridge:    m.Bridge,
+		}
+	}
 	m.PostStart = func() {
 		// Force-enable batch sending so history backfill works against our
 		// standard Synapse. Synapse does not advertise com.beeper.batch_sending in
