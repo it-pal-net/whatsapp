@@ -87,6 +87,13 @@ func (wa *WhatsAppClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 	if err != nil {
 		return nil, err
 	}
+	// Remember view-once sends so a later "played" receipt can be attributed to
+	// view-once media (and label the message as opened); see handleWAReceipt.
+	if resp != nil && resp.DB != nil && waMsg.GetViewOnceMessageV2().GetMessage() != nil {
+		if meta, ok := resp.DB.Metadata.(*waid.MessageMetadata); ok {
+			meta.IsViewOnce = true
+		}
+	}
 	wa.sendAddressbookContactsCaption(ctx, msg)
 	return resp, nil
 }

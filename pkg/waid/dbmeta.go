@@ -92,6 +92,12 @@ type MessageMetadata struct {
 	// WhatsApp (e.g. "!"-prefixed internal notes). Edits, redactions and
 	// reactions targeting such messages must not be relayed either.
 	Internal bool `json:"internal,omitempty"`
+	// IsViewOnce marks a message sent to WhatsApp as view-once media. It lets a
+	// later "played" receipt be attributed to view-once (vs. a played voice
+	// note) so the timeline can show the message was opened. ViewOnceViewed
+	// records that such a receipt already arrived (dedupes the marker edit).
+	IsViewOnce     bool `json:"is_view_once,omitempty"`
+	ViewOnceViewed bool `json:"view_once_viewed,omitempty"`
 }
 
 func (mm *MessageMetadata) CopyFrom(other any) {
@@ -112,6 +118,8 @@ func (mm *MessageMetadata) CopyFrom(other any) {
 	}
 	mm.IsMatrixPoll = mm.IsMatrixPoll || otherMM.IsMatrixPoll
 	mm.Internal = mm.Internal || otherMM.Internal
+	mm.IsViewOnce = mm.IsViewOnce || otherMM.IsViewOnce
+	mm.ViewOnceViewed = mm.ViewOnceViewed || otherMM.ViewOnceViewed
 }
 
 type ReactionMetadata struct {

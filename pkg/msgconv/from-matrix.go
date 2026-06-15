@@ -105,6 +105,7 @@ func (mc *MessageConverter) ToWhatsApp(
 	if evt.Type == event.EventSticker {
 		content.MsgType = event.MessageType(event.EventSticker.Type)
 	}
+	sendAsViewOnce := shouldSendAsViewOnce(evt)
 
 	message := &waE2E.Message{}
 	contextInfo := mc.generateContextInfo(ctx, replyTo, portal, content.BeeperDisappearingTimer, content.Mentions != nil && content.Mentions.Room)
@@ -140,6 +141,29 @@ func (mc *MessageConverter) ToWhatsApp(
 	default:
 		return nil, nil, fmt.Errorf("%w %s", bridgev2.ErrUnsupportedMessageType, content.MsgType)
 	}
+	if sendAsViewOnce {
+		// WhatsApp only offers view-once for photos and videos. The inner
+		// ViewOnce flag plus the ViewOnceMessageV2 wrapper is what official
+		// clients expect for image/video (ViewOnceMessageV2Extension is the
+		// voice-note variant and must not be used here).
+		switch content.MsgType {
+		case event.MsgImage:
+			if message.ImageMessage != nil {
+				message.ImageMessage.ViewOnce = proto.Bool(true)
+			}
+		case event.MsgVideo:
+			if message.VideoMessage != nil {
+				message.VideoMessage.ViewOnce = proto.Bool(true)
+			}
+		default:
+			return nil, nil, fmt.Errorf("%w: view once is only supported for images and videos", bridgev2.ErrUnsupportedMessageType)
+		}
+		message = &waE2E.Message{
+			ViewOnceMessageV2: &waE2E.FutureProofMessage{
+				Message: message,
+			},
+		}
+	}
 	extra := &whatsmeow.SendRequestExtra{}
 	if portal.Metadata.(*waid.PortalMetadata).CommunityAnnouncementGroup {
 		if threadRoot != nil {
@@ -172,6 +196,32 @@ func (mc *MessageConverter) ToWhatsApp(
 		}
 	}
 	return message, extra, nil
+}
+
+// ViewOnceCustomField marks a Matrix media event that should be sent to
+// WhatsApp as a view-once message, and is set on bridged incoming view-once
+// media so clients can label it. Kept as a custom content field because there
+// is no standard Matrix property for view-once media.
+const ViewOnceCustomField = "fi.mau.whatsapp.view_once"
+
+func shouldSendAsViewOnce(evt *event.Event) bool {
+	if evt == nil || evt.Content.Raw == nil {
+		return false
+	}
+	rawVal, ok := evt.Content.Raw[ViewOnceCustomField]
+	if !ok {
+		return false
+	}
+	switch typed := rawVal.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(typed, "true") || typed == "1" || strings.EqualFold(typed, "yes")
+	case float64:
+		return typed != 0
+	default:
+		return false
+	}
 }
 
 func (mc *MessageConverter) constructMediaMessage(

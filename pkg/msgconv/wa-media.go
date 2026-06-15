@@ -63,6 +63,12 @@ func (mc *MessageConverter) convertMediaMessage(
 	}
 	preparedMedia := prepareMediaMessage(msg)
 	preparedMedia.TypeDescription = typeName
+	if isViewOnce {
+		// Surface view-once as a custom content field so Matrix clients can
+		// label the media (the bridge still delivers it as normal media here
+		// because DisableViewOnce is off).
+		preparedMedia.Extra[ViewOnceCustomField] = true
+	}
 	if preparedMedia.FileName != "" && preparedMedia.Body != preparedMedia.FileName {
 		mc.parseFormatting(preparedMedia.MessageEventContent, false, false)
 	}

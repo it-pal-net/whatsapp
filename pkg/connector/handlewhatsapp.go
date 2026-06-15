@@ -435,18 +435,6 @@ func (wa *WhatsAppClient) handleWAReceipt(ctx context.Context, evt *events.Recei
 	if evt.IsFromMe && evt.Sender.Device == 0 {
 		wa.phoneSeen(evt.Timestamp)
 	}
-	var evtType bridgev2.RemoteEventType
-	switch evt.Type {
-	case types.ReceiptTypeRead, types.ReceiptTypeReadSelf:
-		evtType = bridgev2.RemoteEventReadReceipt
-	case types.ReceiptTypeDelivered:
-		evtType = bridgev2.RemoteEventDeliveryReceipt
-	case types.ReceiptTypeSender:
-		fallthrough
-	default:
-		return true
-	}
-	targets := make([]networkid.MessageID, len(evt.MessageIDs))
 	messageSender := wa.JID
 	if !evt.MessageSender.IsEmpty() {
 		messageSender = evt.MessageSender
@@ -460,6 +448,21 @@ func (wa *WhatsAppClient) handleWAReceipt(ctx context.Context, evt *events.Recei
 			messageSender = lid
 		}
 	}
+	var evtType bridgev2.RemoteEventType
+	switch evt.Type {
+	case types.ReceiptTypeRead, types.ReceiptTypeReadSelf:
+		evtType = bridgev2.RemoteEventReadReceipt
+	case types.ReceiptTypeDelivered:
+		evtType = bridgev2.RemoteEventDeliveryReceipt
+	case types.ReceiptTypePlayed:
+		// Recipient opened a view-once photo/video we sent; mark it as viewed.
+		return wa.markViewOnceViewed(ctx, evt, messageSender)
+	case types.ReceiptTypeSender:
+		fallthrough
+	default:
+		return true
+	}
+	targets := make([]networkid.MessageID, len(evt.MessageIDs))
 	for i, id := range evt.MessageIDs {
 		targets[i] = waid.MakeMessageID(evt.Chat, messageSender, id)
 	}
