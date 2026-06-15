@@ -71,6 +71,10 @@ func main() {
 				setPortalSettings,
 			)
 			m.Matrix.Provisioning.Router.HandleFunc(
+				"PUT /v3/portals/{roomID}/disappearing-timer",
+				setPortalDisappearingTimer,
+			)
+			m.Matrix.Provisioning.Router.HandleFunc(
 				"DELETE /v3/portals/{roomID}",
 				deletePortal,
 			)

@@ -9,15 +9,20 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/rs/zerolog/hlog"
 	"go.mau.fi/util/exhttp"
+	"go.mau.fi/whatsmeow"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
+	"go.mau.fi/mautrix-whatsapp/pkg/connector"
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
 
@@ -150,6 +155,23 @@ type PortalSettings struct {
 	RespectDisappearingTimer bool `json:"respect_disappearing_timer"`
 }
 
+// PortalSettingsResponse is what GET settings returns: the editable metadata
+// flags plus the read-only disappearing-message timer (ms, 0 = off) the bridge
+// tracks for the chat. The timer is changed through the dedicated
+// /disappearing-timer endpoint (it must propagate to WhatsApp), so it is not
+// part of the PUT settings body.
+type PortalSettingsResponse struct {
+	PortalSettings
+	DisappearingTimerMS int64 `json:"disappearing_timer_ms"`
+}
+
+// DisappearingTimerRequest is the wire format of the disappearing-timer
+// endpoint. TimerMS is milliseconds; only 0 (off), 24h, 7d and 90d are valid,
+// matching WhatsApp.
+type DisappearingTimerRequest struct {
+	TimerMS int64 `json:"timer_ms"`
+}
+
 func loadPortalForProvisioning(w http.ResponseWriter, r *http.Request) *bridgev2.Portal {
 	roomID := id.RoomID(r.PathValue("roomID"))
 	if roomID == "" {
@@ -188,9 +210,97 @@ func getPortalSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exhttp.WriteJSONResponse(w, http.StatusOK, PortalSettings{
-		AllowMessageDeletion:     meta.AllowMessageDeletion,
-		RespectDisappearingTimer: meta.RespectDisappearingTimer,
+	exhttp.WriteJSONResponse(w, http.StatusOK, PortalSettingsResponse{
+		PortalSettings: PortalSettings{
+			AllowMessageDeletion:     meta.AllowMessageDeletion,
+			RespectDisappearingTimer: meta.RespectDisappearingTimer,
+		},
+		DisappearingTimerMS: portal.Disappear.Timer.Milliseconds(),
+	})
+}
+
+// loggedInPortalClient resolves the connected WhatsApp client driving a portal,
+// or writes a 403 and returns nil. The disappearing-timer change must be made
+// with the portal's actual WhatsApp login (the connection "owner" is not a real
+// Matrix user and is not joined to the room), so we go through the bridge login
+// rather than impersonating a Matrix user.
+func loggedInPortalClient(w http.ResponseWriter, r *http.Request, portal *bridgev2.Portal) *connector.WhatsAppClient {
+	logins, err := m.Bridge.GetUserLoginsInPortal(r.Context(), portal.PortalKey)
+	if err != nil {
+		hlog.FromRequest(r).Err(err).Stringer("portal_mxid", portal.MXID).Msg("Failed to load portal logins")
+		matrix.RespondWithError(w, err, "Internal error loading portal logins")
+		return nil
+	}
+	for _, login := range logins {
+		if !login.Client.IsLoggedIn() {
+			continue
+		}
+		if waClient, ok := login.Client.(*connector.WhatsAppClient); ok && waClient.Client != nil {
+			return waClient
+		}
+	}
+	mautrix.MForbidden.WithMessage("No connected WhatsApp login for this room").Write(w)
+	return nil
+}
+
+func setPortalDisappearingTimer(w http.ResponseWriter, r *http.Request) {
+	portal := loadPortalForProvisioning(w, r)
+	if portal == nil {
+		return
+	}
+
+	var req DisappearingTimerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		mautrix.MBadJSON.WithMessage("Invalid JSON body").Write(w)
+		return
+	}
+
+	timer := time.Duration(req.TimerMS) * time.Millisecond
+	switch timer {
+	case whatsmeow.DisappearingTimerOff, whatsmeow.DisappearingTimer24Hours,
+		whatsmeow.DisappearingTimer7Days, whatsmeow.DisappearingTimer90Days:
+	default:
+		mautrix.MInvalidParam.WithMessage("Unsupported disappearing timer value").Write(w)
+		return
+	}
+
+	portalJID, err := waid.ParsePortalID(portal.ID)
+	if err != nil {
+		matrix.RespondWithError(w, err, "Invalid portal ID")
+		return
+	}
+
+	waClient := loggedInPortalClient(w, r, portal)
+	if waClient == nil {
+		return
+	}
+
+	settingTS := time.Now()
+	if err := waClient.Client.SetDisappearingTimer(r.Context(), portalJID, timer, settingTS); err != nil {
+		hlog.FromRequest(r).Err(err).Stringer("portal_mxid", portal.MXID).Msg("Failed to set WhatsApp disappearing timer")
+		matrix.RespondWithError(w, err, "Failed to set disappearing timer on WhatsApp")
+		return
+	}
+
+	if meta, ok := portal.Metadata.(*waid.PortalMetadata); ok {
+		meta.DisappearingTimerSetAt = settingTS.Unix()
+	}
+	setting := database.DisappearingSetting{Type: event.DisappearingTypeAfterSend, Timer: timer}
+	if timer == 0 {
+		setting.Type = event.DisappearingTypeNone
+	}
+	// Persists the setting and emits the com.beeper.disappearing_timer state
+	// event plus the timer-change notice into the room (via the bridge bot), so
+	// the SyncContact timeline reflects the change just like a WhatsApp-initiated
+	// one.
+	portal.UpdateDisappearingSetting(r.Context(), setting, bridgev2.UpdateDisappearingSettingOpts{
+		Timestamp:  settingTS,
+		Save:       true,
+		SendNotice: true,
+	})
+
+	exhttp.WriteJSONResponse(w, http.StatusOK, DisappearingTimerRequest{
+		TimerMS: portal.Disappear.Timer.Milliseconds(),
 	})
 }
 
