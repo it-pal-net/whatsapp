@@ -28,7 +28,6 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"maunium.net/go/mautrix/bridgev2"
@@ -77,6 +76,7 @@ func init() {
 func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 	log := wa.UserLogin.Log
 	ctx := log.WithContext(wa.Main.Bridge.BackgroundCtx)
+	wa.MC.OnWhatsAppEvent(rawEvt)
 
 	success = true
 	switch evt := rawEvt.(type) {
@@ -168,7 +168,6 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 			}()
 			go wa.syncRemoteProfile(ctx, nil)
 		}
-		wa.MC.OnConnect(store.GetWAVersion()[2], wa.Device.Platform)
 	case *events.OfflineSyncPreview:
 		log.Info().
 			Int("message_count", evt.Messages).
@@ -363,23 +362,28 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 	messageAssoc := evt.Message.GetMessageContextInfo().GetMessageAssociation()
 	if assocType := messageAssoc.GetAssociationType(); assocType == waE2E.MessageAssociation_HD_IMAGE_DUAL_UPLOAD || assocType == waE2E.MessageAssociation_HD_VIDEO_DUAL_UPLOAD {
 		parentKey := messageAssoc.GetParentMessageKey()
-		associatedMessage := evt.Message.GetAssociatedChildMessage().GetMessage()
+		protocolMsg := evt.Message.GetProtocolMessage()
+		if protocolMsg.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT || protocolMsg.GetKey() == nil {
+			protocolMsg = &waE2E.ProtocolMessage{
+				Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+				Key:           parentKey,
+				EditedMessage: evt.Message.GetAssociatedChildMessage().GetMessage(),
+			}
+			dontRenderEdited = true
+		} else if child := protocolMsg.GetEditedMessage().GetAssociatedChildMessage().GetMessage(); child != nil {
+			protocolMsg.EditedMessage = child
+			protocolMsg.Key = parentKey
+		}
 		wa.UserLogin.Log.Debug().
 			Str("message_id", evt.Info.ID).
 			Str("parent_id", parentKey.GetID()).
 			Stringer("assoc_type", assocType).
 			Msg("Received HD replacement message, converting to edit")
 
-		protocolMsg := &waE2E.ProtocolMessage{
-			Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
-			Key:           parentKey,
-			EditedMessage: associatedMessage,
-		}
 		evt.Message = &waE2E.Message{
 			ProtocolMessage: protocolMsg,
 		}
 		parsedMessageType = getMessageType(evt.Message)
-		dontRenderEdited = true
 	} else if assocType == waE2E.MessageAssociation_MOTION_PHOTO {
 		//evt.Message = evt.Message.GetAssociatedChildMessage().GetMessage()
 		wa.UserLogin.Log.Debug().

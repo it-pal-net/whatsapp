@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/exfmt"
 	"go.mau.fi/util/exmime"
 	"go.mau.fi/util/exslices"
 	"go.mau.fi/whatsmeow"
@@ -135,10 +136,10 @@ func getMediaIDVersion(msg MediaMessage) []byte {
 func (mc *MessageConverter) convertAlbumMessage(ctx context.Context, msg *waE2E.AlbumMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
 	parts := make([]string, 0, 2)
 	if msg.GetExpectedImageCount() > 0 {
-		parts = append(parts, fmt.Sprintf("%d images", msg.GetExpectedImageCount()))
+		parts = append(parts, exfmt.Pluralizable("image")(int(msg.GetExpectedImageCount())))
 	}
 	if msg.GetExpectedVideoCount() > 0 {
-		parts = append(parts, fmt.Sprintf("%d videos", msg.GetExpectedVideoCount()))
+		parts = append(parts, exfmt.Pluralizable("video")(int(msg.GetExpectedVideoCount())))
 	}
 	var partDesc string
 	if len(parts) > 0 {
@@ -380,7 +381,7 @@ func (mc *MessageConverter) reuploadWhatsAppAttachment(
 		var err error
 		part.URL, part.File, err = intent.UploadMediaStream(ctx, roomID, -1, true, func(file io.Writer) (*bridgev2.FileStreamResult, error) {
 			err := client.DownloadToFile(ctx, message, file.(*os.File))
-			if errors.Is(err, whatsmeow.ErrFileLengthMismatch) || errors.Is(err, whatsmeow.ErrInvalidMediaSHA256) {
+			if errors.Is(err, whatsmeow.ErrInvalidMediaSHA256) {
 				zerolog.Ctx(ctx).Warn().Err(err).Msg("Mismatching media checksums in message. Ignoring because WhatsApp seems to ignore them too")
 			} else if err != nil {
 				return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaDownloadFailed, err)
@@ -401,7 +402,7 @@ func (mc *MessageConverter) reuploadWhatsAppAttachment(
 		}
 	} else {
 		data, err := client.Download(ctx, message)
-		if errors.Is(err, whatsmeow.ErrFileLengthMismatch) || errors.Is(err, whatsmeow.ErrInvalidMediaSHA256) {
+		if errors.Is(err, whatsmeow.ErrInvalidMediaSHA256) {
 			zerolog.Ctx(ctx).Warn().Err(err).Msg("Mismatching media checksums in message. Ignoring because WhatsApp seems to ignore them too")
 		} else if err != nil {
 			return fmt.Errorf("%w: %w", bridgev2.ErrMediaDownloadFailed, err)
