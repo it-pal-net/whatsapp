@@ -12,3 +12,6 @@
 
 /mautrix-whatsapp
 /start
+
+# Writable copies of patched Go modules, materialised at build time by patches/apply.sh
+/.patched/

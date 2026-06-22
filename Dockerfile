@@ -1,9 +1,12 @@
 FROM golang:1-alpine3.23 AS builder
 
-RUN apk add --no-cache git ca-certificates build-base su-exec olm-dev
+RUN apk add --no-cache git ca-certificates build-base su-exec olm-dev patch
+
+ENV GOFLAGS=-mod=mod
 
 COPY . /build
 WORKDIR /build
+RUN ./patches/apply.sh
 RUN ./build.sh
 
 FROM alpine:3.23

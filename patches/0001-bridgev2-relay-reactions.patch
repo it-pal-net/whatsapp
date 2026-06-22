@@ -1,0 +1,27 @@
+Forward reactions from relayed users instead of dropping them.
+
+synccontact operators act through relay mode: each workspace has a single
+shared WhatsApp login (the per-workspace bot account set as the portal relay),
+and operators are separate Matrix users whose events are relayed. Upstream
+bridgev2 deliberately ignores reactions (origSender != nil) because a WhatsApp
+reaction can't carry per-sender attribution. In our model that attribution is
+already lost for messages (relay message_formats have no sender prefix), so we
+forward the reaction through the relay login, sending it as the WhatsApp
+account itself. The reaction-removal (redaction) path has no relay guard, so
+it already works once the reaction is stored.
+
+--- a/bridgev2/portal.go
++++ b/bridgev2/portal.go
+@@ -849,8 +849,10 @@ func (portal *Portal) handleMatrixEvent(ctx context.Context, sender *User, evt *event.Event, isStateRequest bool) EventHandlingResult {
+ 		return portal.handleMatrixMessage(ctx, login, origSender, evt)
+ 	case event.EventReaction:
+ 		if origSender != nil {
+-			log.Debug().Msg("Ignoring reaction event from relayed user")
+-			return EventHandlingResultIgnored.WithMSSError(ErrIgnoringReactionFromRelayedUser)
++			// synccontact: operators act via relay mode (one shared WhatsApp
++			// login per workspace), so forward their reactions through the
++			// relay login instead of dropping them.
++			log.Debug().Msg("Bridging reaction from relayed user (synccontact)")
+ 		}
+ 		return portal.handleMatrixReaction(ctx, login, evt)
+ 	case event.EventRedaction:
