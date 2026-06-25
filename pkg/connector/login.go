@@ -337,6 +337,30 @@ func (wl *WALogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 	}
 
 	newLoginID := waid.MakeUserLoginID(wl.LoginSuccess.ID)
+	// A WhatsApp number is keyed globally by phone, so it can belong to only one
+	// bridge user (workspace) at a time. Whoever pairs the number last takes it
+	// over — pairing the device proves control of the number, so the claimant
+	// shouldn't need access to the previous workspace to disconnect it there.
+	// If it was already connected under a different workspace, cleanly unlink
+	// that previous login first: LogoutRemote so the old companion device is
+	// actually removed from the phone's linked devices (the framework's
+	// DeleteOnConflict path uses LogoutRemote:false and would orphan it), and
+	// DontCleanupRooms so the previous workspace keeps its chat history.
+	if existing, lookupErr := wl.Main.Bridge.GetExistingUserLoginByID(ctx, newLoginID); lookupErr != nil {
+		wl.Log.Err(lookupErr).Msg("Failed to check whether WhatsApp number is already connected elsewhere")
+	} else if existing != nil && existing.UserMXID != wl.User.MXID {
+		wl.Log.Info().
+			Stringer("previous_user", existing.UserMXID).
+			Str("login_id", string(newLoginID)).
+			Msg("WhatsApp number already connected under another workspace; logging out the previous link before taking over")
+		existing.Delete(ctx, status.BridgeState{
+			StateEvent: status.StateLoggedOut,
+			Reason:     "LOGIN_MOVED_TO_ANOTHER_WORKSPACE",
+		}, bridgev2.DeleteOpts{
+			LogoutRemote:     true,
+			DontCleanupRooms: true,
+		})
+	}
 	ul, err := wl.User.NewLogin(ctx, &database.UserLogin{
 		ID:         newLoginID,
 		RemoteName: "+" + wl.LoginSuccess.ID.User,
