@@ -386,10 +386,21 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 		}
 		conv := conversations[i]
 		if conv.ChatJID == types.StatusBroadcastJID && !wa.Main.Config.EnableStatusBroadcast {
+			// Skipped conversations must still be marked synced, otherwise they stay
+			// in the pending-portal-creation count forever and ready_for_discovery
+			// never becomes true (blocking unlinked-chat discovery).
+			if err := wa.Main.DB.Conversation.MarkSynced(ctx, wa.UserLogin.ID, conv.ChatJID, loginTS); err != nil {
+				log.Err(err).Stringer("chat_jid", conv.ChatJID).Msg("Failed to mark skipped status-broadcast conversation as synced")
+			}
 			wg.Done()
 			continue
 		} else if conv.ChatJID == types.PSAJID || conv.ChatJID == types.LegacyPSAJID {
-			// We don't currently support new PSAs, so don't bother backfilling them either
+			// We don't currently support new PSAs, so don't bother backfilling them either.
+			// Still mark synced (e.g. 0@s.whatsapp.net, the WhatsApp official account) so a
+			// number whose only chat is the PSA doesn't stay stuck at ready_for_discovery=false.
+			if err := wa.Main.DB.Conversation.MarkSynced(ctx, wa.UserLogin.ID, conv.ChatJID, loginTS); err != nil {
+				log.Err(err).Stringer("chat_jid", conv.ChatJID).Msg("Failed to mark skipped PSA conversation as synced")
+			}
 			wg.Done()
 			continue
 		}
