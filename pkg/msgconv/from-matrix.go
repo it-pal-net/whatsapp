@@ -224,6 +224,22 @@ func shouldSendAsViewOnce(evt *event.Event) bool {
 	}
 }
 
+// VideoNoteCustomField marks a Matrix m.video event that should be delivered to
+// WhatsApp as a round video note (PTV, "push to video") rather than a
+// rectangular video. The web composer sets it on recorded video notes; like
+// ViewOnceCustomField it lives in a custom content field because there is no
+// standard Matrix property for a round video note. Presence alone signals it —
+// the value is an empty object.
+const VideoNoteCustomField = "com.synccontact.video_note"
+
+func isVideoNote(evt *event.Event) bool {
+	if evt == nil || evt.Content.Raw == nil {
+		return false
+	}
+	_, ok := evt.Content.Raw[VideoNoteCustomField]
+	return ok
+}
+
 func (mc *MessageConverter) constructMediaMessage(
 	ctx context.Context,
 	content *event.MessageEventContent,
@@ -306,25 +322,32 @@ func (mc *MessageConverter) constructMediaMessage(
 		height := uint32(content.Info.Height)
 		seconds := uint32(content.Info.Duration / 1000)
 
-		return &waE2E.Message{
-			VideoMessage: &waE2E.VideoMessage{
-				GifPlayback: proto.Bool(isGIF),
-				Width:       &width,
-				Height:      &height,
-				Seconds:     &seconds,
+		videoMessage := &waE2E.VideoMessage{
+			GifPlayback: proto.Bool(isGIF),
+			Width:       &width,
+			Height:      &height,
+			Seconds:     &seconds,
 
-				Caption:       proto.String(caption),
-				JPEGThumbnail: thumbnail,
-				URL:           proto.String(uploaded.URL),
-				DirectPath:    proto.String(uploaded.DirectPath),
-				MediaKey:      uploaded.MediaKey,
-				Mimetype:      proto.String(mime),
-				FileEncSHA256: uploaded.FileEncSHA256,
-				FileSHA256:    uploaded.FileSHA256,
-				FileLength:    proto.Uint64(uploaded.FileLength),
-				ContextInfo:   contextInfo,
-			},
+			Caption:       proto.String(caption),
+			JPEGThumbnail: thumbnail,
+			URL:           proto.String(uploaded.URL),
+			DirectPath:    proto.String(uploaded.DirectPath),
+			MediaKey:      uploaded.MediaKey,
+			Mimetype:      proto.String(mime),
+			FileEncSHA256: uploaded.FileEncSHA256,
+			FileSHA256:    uploaded.FileSHA256,
+			FileLength:    proto.Uint64(uploaded.FileLength),
+			ContextInfo:   contextInfo,
 		}
+		// A round video note maps to WhatsApp's native PTV slot, which official
+		// clients render as a circular bubble. The payload is an ordinary
+		// VideoMessage; only the proto field it occupies differs. Our recorder
+		// already produces the square, <=60s clip PTV expects, and the WebM is
+		// transcoded to progressive H.264 MP4 during reupload.
+		if isVideoNote(evt) {
+			return &waE2E.Message{PtvMessage: videoMessage}
+		}
+		return &waE2E.Message{VideoMessage: videoMessage}
 	case event.MsgFile:
 		fileName := content.FileName
 		if fileName == "" {
