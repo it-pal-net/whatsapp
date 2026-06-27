@@ -193,6 +193,17 @@ func (mc *MessageConverter) ToMatrix(
 		part, contextInfo = mc.convertMediaMessage(ctx, waMsg.VideoMessage, "video attachment", info, isViewOnce, previouslyConvertedPart)
 	case waMsg.PtvMessage != nil:
 		part, contextInfo = mc.convertMediaMessage(ctx, waMsg.PtvMessage, "video message", info, isViewOnce, previouslyConvertedPart)
+		// A PTV is WhatsApp's round video note. Tag it with the same custom
+		// field we set when sending one (see VideoNoteCustomField in
+		// from-matrix.go) so our timeline renders it in a circular bubble
+		// instead of a rectangular video player. Presence is the signal; the
+		// value is an empty object, matching the web composer.
+		if part != nil {
+			if part.Extra == nil {
+				part.Extra = map[string]any{}
+			}
+			part.Extra[VideoNoteCustomField] = map[string]any{}
+		}
 	case waMsg.AudioMessage != nil:
 		typeName := "audio attachment"
 		if waMsg.AudioMessage.GetPTT() {
