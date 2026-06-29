@@ -81,6 +81,9 @@ func (wa *WhatsAppClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 	if isInternalMessage(msg.Content) {
 		return wa.handleInternalMatrixMessage(msg)
 	}
+	if msg.Content.MsgType == event.MsgBeeperGallery {
+		return wa.handleMatrixGallery(ctx, msg)
+	}
 	waMsg, req, err := wa.Main.MsgConv.ToWhatsApp(ctx, wa.Client, msg.Event, msg.Content, msg.ReplyTo, msg.ThreadRoot, msg.Portal)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert message: %w", err)
@@ -98,6 +101,54 @@ func (wa *WhatsAppClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 		}
 	}
 	wa.sendAddressbookContactsCaption(ctx, msg)
+	return resp, nil
+}
+
+// handleMatrixGallery sends a com.beeper.gallery event as a native WhatsApp
+// album: first the AlbumMessage container (which the Matrix event maps to), then
+// each photo/video as its own message linked to the container via
+// MessageAssociation(MEDIA_ALBUM). The media sends mirror sendAddressbookContacts
+// Caption — fire-and-forget with the sent IDs added to the ignore set so their
+// echoes don't come back as separate inbound images.
+func (wa *WhatsAppClient) handleMatrixGallery(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
+	images := msg.Content.BeeperGalleryImages
+	if len(images) == 0 {
+		return nil, fmt.Errorf("%w: gallery has no media", bridgev2.ErrUnsupportedMessageType)
+	}
+	chatJID, err := waid.ParsePortalID(msg.Portal.ID)
+	if err != nil {
+		return nil, err
+	}
+	log := zerolog.Ctx(ctx)
+
+	container := wa.Main.MsgConv.BuildAlbumContainer(ctx, images, msg.ReplyTo, msg.Portal)
+	resp, err := wa.handleConvertedMatrixMessage(ctx, msg, container, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send album container: %w", err)
+	}
+	parsedContainerID, err := waid.ParseMessageID(resp.DB.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse album container ID: %w", err)
+	}
+	parentKey := &waCommon.MessageKey{
+		RemoteJID: proto.String(chatJID.String()),
+		FromMe:    proto.Bool(true),
+		ID:        proto.String(parsedContainerID.ID),
+	}
+
+	for i, img := range images {
+		mediaMsg, err := wa.Main.MsgConv.BuildAlbumMediaMessage(ctx, wa.Client, msg.Event, img, msg.Portal, parentKey, i)
+		if err != nil {
+			log.Err(err).Int("index", i).Msg("Failed to build album media message")
+			continue
+		}
+		req := whatsmeow.SendRequestExtra{ID: wa.Client.GenerateMessageID()}
+		msg.AddPendingToIgnore(networkid.TransactionID(waid.MakeMessageID(chatJID, wa.JID, req.ID)))
+		msg.AddPendingToIgnore(networkid.TransactionID(waid.MakeMessageID(chatJID, wa.GetStore().GetLID(), req.ID)))
+		if _, err = wa.Client.SendMessage(ctx, chatJID, mediaMsg, req); err != nil {
+			log.Err(err).Int("index", i).Msg("Failed to send album media message")
+		}
+	}
 	return resp, nil
 }
 

@@ -49,6 +49,15 @@ const (
 	ContextKeyEditTargetID
 )
 
+// Album grouping markers set on each photo/video that belongs to a WhatsApp
+// album. AlbumIDCustomField is the (dropped) container's message ID shared by
+// every item; AlbumIndexCustomField preserves the item's position. The
+// SyncContact client groups consecutive same-album items into one gallery.
+const (
+	AlbumIDCustomField    = "com.synccontact.album_id"
+	AlbumIndexCustomField = "com.synccontact.album_index"
+)
+
 func getClient(ctx context.Context) *whatsmeow.Client {
 	return ctx.Value(contextKeyClient).(*whatsmeow.Client)
 }
@@ -252,6 +261,21 @@ func (mc *MessageConverter) ToMatrix(
 	mc.addMentions(ctx, contextInfo.GetMentionedJID(), part.Content)
 	if contextInfo.GetNonJIDMentions() == 1 {
 		part.Content.Mentions.Room = true
+	}
+
+	// WhatsApp albums arrive as separate photo/video messages, each linked to
+	// the (dropped) album container via MessageAssociation(MEDIA_ALBUM). Surface
+	// that link as custom content fields so the SyncContact client can group the
+	// items into one gallery bubble while keeping each as its own event (so
+	// per-photo reactions/replies/deletes still work).
+	if assoc := waMsg.GetMessageContextInfo().GetMessageAssociation(); assoc.GetAssociationType() == waE2E.MessageAssociation_MEDIA_ALBUM {
+		if parentID := assoc.GetParentMessageKey().GetID(); parentID != "" {
+			if part.Extra == nil {
+				part.Extra = map[string]any{}
+			}
+			part.Extra[AlbumIDCustomField] = parentID
+			part.Extra[AlbumIndexCustomField] = int(assoc.GetMessageIndex())
+		}
 	}
 
 	cm := &bridgev2.ConvertedMessage{

@@ -391,6 +391,13 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 			Str("parent_id", messageAssoc.GetParentMessageKey().GetID()).
 			Msg("Ignoring motion photo update")
 		return
+	} else if assocType == waE2E.MessageAssociation_MEDIA_ALBUM {
+		// The album's photos are bridged + grouped client-side on the index-0
+		// photo. Remember which photo that is so reactions WhatsApp targets at
+		// the (dropped) album container can be redirected to it (GetTargetMessage).
+		if messageAssoc.GetMessageIndex() == 0 {
+			wa.recordAlbumAnchor(messageAssoc.GetParentMessageKey().GetID(), evt.Info.ID)
+		}
 	}
 
 	res := wa.UserLogin.QueueRemoteEvent(&WAMessageEvent{

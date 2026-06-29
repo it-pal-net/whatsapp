@@ -141,7 +141,11 @@ func getMessageType(waMsg *waE2E.Message) string {
 	case waMsg.StickerPackMessage != nil:
 		return "sticker pack"
 	case waMsg.AlbumMessage != nil:
-		return "album" // or maybe these should be ignored?
+		// The album container only announces counts; the actual photos/videos
+		// arrive as separate messages tagged with MessageAssociation(MEDIA_ALBUM)
+		// (see the album tagging in msgconv.ToMatrix). The SyncContact client
+		// groups those into one bubble, so the container itself is dropped.
+		return "ignore"
 	case waMsg.SendPaymentMessage != nil, waMsg.RequestPaymentMessage != nil,
 		waMsg.DeclinePaymentRequestMessage != nil, waMsg.CancelPaymentRequestMessage != nil,
 		waMsg.PaymentInviteMessage != nil:

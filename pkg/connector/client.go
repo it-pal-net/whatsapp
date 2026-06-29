@@ -122,6 +122,12 @@ type WhatsAppClient struct {
 
 	appStateRecoveryLock      sync.Mutex
 	appStateFullSyncAttempted map[appstate.WAPatchName]time.Time
+
+	// Maps an album container's WhatsApp message id -> its index-0 photo's id.
+	// WhatsApp targets album reactions at the album container, which we drop
+	// (the photos are bridged + grouped client-side), so reactions are
+	// redirected to the gallery's anchor photo. See GetTargetMessage.
+	albumAnchors sync.Map
 }
 
 var (

@@ -25,10 +25,12 @@ import (
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waMmsRetry"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -231,12 +233,40 @@ func (evt *WAMessageEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Por
 	}, nil
 }
 
+// recordAlbumAnchor remembers that album `containerID`'s gallery is anchored on
+// photo `imageID` (its index-0 item), so album reactions can be redirected.
+func (wa *WhatsAppClient) recordAlbumAnchor(containerID string, imageID types.MessageID) {
+	if containerID == "" || imageID == "" {
+		return
+	}
+	wa.albumAnchors.Store(containerID, imageID)
+}
+
+func (wa *WhatsAppClient) lookupAlbumAnchor(containerID string) (types.MessageID, bool) {
+	if v, ok := wa.albumAnchors.Load(containerID); ok {
+		id, ok := v.(types.MessageID)
+		return id, ok
+	}
+	return "", false
+}
+
 func (evt *WAMessageEvent) GetTargetMessage() networkid.MessageID {
 	if reactionMsg := evt.Message.GetReactionMessage(); reactionMsg != nil {
 		ctx := evt.wa.UserLogin.Log.
 			With().Str("action", "get reaction target message").Str("message_id", evt.Info.ID).Logger().
 			WithContext(evt.wa.Main.Bridge.BackgroundCtx)
-		return msgconv.KeyToMessageID(ctx, evt.wa.Client, evt.Info.Chat, evt.Info.Sender, reactionMsg.GetKey())
+		key := reactionMsg.GetKey()
+		// WhatsApp targets album reactions at the album container, which we drop;
+		// redirect to the album's anchor photo so the reaction lands on the gallery.
+		if anchorID, ok := evt.wa.lookupAlbumAnchor(key.GetID()); ok {
+			key = &waCommon.MessageKey{
+				RemoteJID:   key.RemoteJID,
+				FromMe:      key.FromMe,
+				ID:          proto.String(string(anchorID)),
+				Participant: key.Participant,
+			}
+		}
+		return msgconv.KeyToMessageID(ctx, evt.wa.Client, evt.Info.Chat, evt.Info.Sender, key)
 	} else if protocolMsg := evt.Message.GetProtocolMessage(); protocolMsg != nil {
 		ctx := evt.wa.UserLogin.Log.
 			With().Str("action", "get edit target message").Str("message_id", evt.Info.ID).Logger().
