@@ -15,6 +15,7 @@ import (
 	"go.mau.fi/util/jsontime"
 	"go.mau.fi/util/ptr"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/types"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -184,10 +185,37 @@ func (wa *WhatsAppClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost
 	return wa.getUserInfo(ctx, jid, ghost.AvatarID == "")
 }
 
+// contactHasName reports whether the local contact store already has a usable
+// display name for a user (as opposed to nothing, which would make
+// displayname_template fall back to the bare phone number).
+func contactHasName(c types.ContactInfo) bool {
+	return c.PushName != "" || c.BusinessName != "" || c.FullName != "" || c.FirstName != ""
+}
+
 func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, fetchAvatar bool) (*bridgev2.UserInfo, error) {
 	contact, err := wa.GetStore().Contacts.GetContact(ctx, jid)
 	if err != nil {
 		return nil, err
+	}
+	// If the local store has no name for this user, do a live usync before
+	// falling back to the phone number. WhatsApp Business accounts that never
+	// messaged us expose their verified business name ONLY via this query (it's
+	// not in the address-book app-state and there's no push name), so without
+	// this a business DM portal is created stuck on the number until the 7-day
+	// background resync eventually fixes it. Client.GetUserInfo stores any
+	// verified name in the contact store as a side effect, so we just re-read it.
+	// Best-effort: on any error we keep the phone-number fallback.
+	if !contactHasName(contact) &&
+		(jid.Server == types.DefaultUserServer || jid.Server == types.HiddenUserServer) &&
+		wa.IsLoggedIn() {
+		if infos, uErr := wa.Client.GetUserInfo(ctx, []types.JID{jid}); uErr != nil {
+			zerolog.Ctx(ctx).Debug().Err(uErr).Stringer("jid", jid).
+				Msg("Failed to fetch live user info for nameless contact")
+		} else if _, ok := infos[jid]; ok {
+			if refreshed, cErr := wa.GetStore().Contacts.GetContact(ctx, jid); cErr == nil {
+				contact = refreshed
+			}
+		}
 	}
 	return wa.contactToUserInfo(ctx, jid, contact, fetchAvatar), nil
 }
@@ -197,6 +225,21 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 		contact.PushName = "Meta AI"
 	} else if jid == types.LegacyPSAJID || jid == types.PSAJID {
 		contact.PushName = "WhatsApp"
+	} else if store := wa.GetStore(); (store.GetJID().User != "" && jid.User == store.GetJID().User) ||
+		(store.GetLID().User != "" && jid.User == store.GetLID().User) {
+		// This is our own account. WhatsApp doesn't list us in the contact store,
+		// and history sync attributes our own sent messages to our LID (or phone
+		// number), so the self-puppet(s) would otherwise fall back to the bare
+		// mxid localpart (e.g. "whatsapp_lid-24851435782380"). Our own display
+		// name lives on the device store, not the contact table; mirror
+		// syncRemoteProfile's BusinessName-over-PushName preference and don't
+		// clobber any name the contact store somehow already has.
+		if contact.BusinessName == "" {
+			contact.BusinessName = store.BusinessName
+		}
+		if contact.PushName == "" {
+			contact.PushName = store.PushName
+		}
 	}
 	var altJID types.JID
 	if jid.Server == types.DefaultUserServer || jid.Server == types.HiddenUserServer {
@@ -404,6 +447,83 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 			wa.syncAltGhostWithInfo(ctx, jid, userInfo)
 		}
 	}
+}
+
+// ResyncAppStateContacts force-fetches WhatsApp app-state patches and then
+// refreshes ghost displaynames from the (now updated) contact store.
+//
+// Address-book contact names live in the critical_unblock_low collection. A
+// login that never synced that collection (e.g. it was empty at initial login
+// and no later server notification arrived) has empty full_name/first_name in
+// whatsmeow's contact store, so every DM ghost/portal falls back to the phone
+// number via displayname_template. Fetching it with fullSync=true pulls the
+// full address book; resyncContacts then repaints existing ghosts. When
+// patches is empty, only critical_unblock_low is fetched.
+//
+// This mirrors the `!wa sync appstate` + `!wa sync contacts` management
+// commands (see commands.go). It is exported so the shared-secret debug
+// endpoint can trigger it for logins whose owner mxid is virtual (no real
+// Matrix account to type the command). See cmd/mautrix-whatsapp/debugprovision.go.
+func (wa *WhatsAppClient) ResyncAppStateContacts(ctx context.Context, patches []appstate.WAPatchName) error {
+	if len(patches) == 0 {
+		patches = []appstate.WAPatchName{appstate.WAPatchCriticalUnblockLow}
+	}
+	for _, name := range patches {
+		if err := wa.Client.FetchAppState(ctx, name, true, false); err != nil {
+			return fmt.Errorf("failed to fetch app state %s: %w", name, err)
+		}
+	}
+	wa.resyncContacts(true, false)
+	return nil
+}
+
+// ResyncGhostNameResult reports, per JID, what a live user-info query returned
+// and whether the ghost was repainted. Returned by ResyncGhostNames for
+// diagnostics via the debug endpoint.
+type ResyncGhostNameResult struct {
+	JID          string `json:"jid"`
+	VerifiedName string `json:"verified_name"`
+	PushName     string `json:"push_name"`
+	BusinessName string `json:"business_name"`
+	GhostName    string `json:"ghost_name"`
+}
+
+// ResyncGhostNames force-fetches live user info (usync) for the given JIDs and
+// repaints their ghosts. Unlike resyncContacts (which only re-reads the local
+// contact store) this hits WhatsApp's servers, so it recovers the verified
+// BUSINESS name for business contacts that never messaged — the exact case
+// where a DM portal is stuck on the phone number because there is no push name
+// and the address book isn't synced. GetUserInfo stores any verified name in
+// the contact store as a side effect; syncGhost then applies it through the
+// normal displayname_template path. Bypasses the ghost.NameSet short-circuit in
+// GetUserInfo (a phone-number name counts as "set" and would otherwise block
+// the refetch). See cmd/mautrix-whatsapp/debugprovision.go.
+func (wa *WhatsAppClient) ResyncGhostNames(ctx context.Context, jids []types.JID) ([]ResyncGhostNameResult, error) {
+	if len(jids) == 0 {
+		return nil, nil
+	}
+	infos, err := wa.Client.GetUserInfo(ctx, jids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user info: %w", err)
+	}
+	results := make([]ResyncGhostNameResult, 0, len(jids))
+	for _, jid := range jids {
+		res := ResyncGhostNameResult{JID: jid.String()}
+		if info, ok := infos[jid]; ok && info.VerifiedName != nil {
+			res.VerifiedName = info.VerifiedName.Details.GetVerifiedName()
+		}
+		if contact, err := wa.GetStore().Contacts.GetContact(ctx, jid); err == nil {
+			res.PushName = contact.PushName
+			res.BusinessName = contact.BusinessName
+		}
+		// Apply whatever the live query stored to the ghost.
+		wa.syncGhost(jid, "debug resync ghost names", nil)
+		if ghost, err := wa.Main.Bridge.GetGhostByID(ctx, waid.MakeUserID(jid)); err == nil {
+			res.GhostName = ghost.Name
+		}
+		results = append(results, res)
+	}
+	return results, nil
 }
 
 func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, info *bridgev2.UserInfo) {

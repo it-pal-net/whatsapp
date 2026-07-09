@@ -171,6 +171,16 @@ func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridge
 			waid.MakeUserID(jid): {EventSender: bridgev2.EventSender{Sender: waid.MakeUserID(jid)}},
 			"":                   {EventSender: bridgev2.EventSender{IsFromMe: true}},
 		}
+	} else if lid := wa.GetStore().GetLID(); !lid.IsEmpty() {
+		// Modern WhatsApp attributes our own messages — including history-sync
+		// backfill — to our LID rather than our phone number, so they're authored
+		// by the LID ghost. The self-member above is only the phone-number ghost,
+		// which leaves the LID ghost a non-member sender that Matrix clients render
+		// as the bare mxid localpart (e.g. "whatsapp_lid-24851435782380") instead
+		// of our profile name. Add the LID ghost as a member too so our own
+		// messages resolve to a named sender. (Group portals already include the
+		// self LID via their participant list.)
+		info.Members.MemberMap[waid.MakeUserID(lid)] = bridgev2.ChatMember{EventSender: wa.makeEventSender(ctx, lid)}
 	}
 	return info
 }

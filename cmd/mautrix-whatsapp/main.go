@@ -1,6 +1,10 @@
 package main
 
 import (
+	"net/http"
+	"os"
+
+	"go.mau.fi/util/exhttp"
 	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 
 	"go.mau.fi/mautrix-whatsapp/pkg/connector"
@@ -81,8 +85,35 @@ func main() {
 				"DELETE /v3/logins/{login_id}/portals",
 				deleteLoginPortals,
 			)
+			registerDebugInbound()
 		}
 	}
 	m.InitVersion(Tag, Commit, BuildTime)
 	m.Run()
+}
+
+// registerDebugInbound wires the synthetic inbound-message endpoint onto the raw
+// appservice router, guarded by the provisioning shared secret
+// (DebugAuthMiddleware, no Matrix user required). It is a no-op unless
+// SYNCCONTACT_DEBUG_INBOUND is set, so the endpoint simply does not exist in
+// production. See debugprovision.go and pkg/connector/debuginject.go.
+func registerDebugInbound() {
+	if os.Getenv("SYNCCONTACT_DEBUG_INBOUND") == "" {
+		return
+	}
+	m.Matrix.AS.Router.Handle(
+		"POST /_synccontact/debug/inbound/{login_id}",
+		exhttp.ApplyMiddleware(
+			http.HandlerFunc(debugInjectInbound),
+			m.Matrix.Provisioning.DebugAuthMiddleware,
+		),
+	)
+	m.Matrix.AS.Router.Handle(
+		"POST /_synccontact/debug/resync-contacts/{login_id}",
+		exhttp.ApplyMiddleware(
+			http.HandlerFunc(debugResyncContacts),
+			m.Matrix.Provisioning.DebugAuthMiddleware,
+		),
+	)
+	m.Log.Warn().Msg("SYNCCONTACT_DEBUG_INBOUND is set: synthetic inbound-message injection + contact-resync endpoints are ACTIVE (dev only)")
 }
