@@ -78,6 +78,9 @@ func (wa *WhatsAppClient) HandleMatrixPollVote(ctx context.Context, msg *bridgev
 }
 
 func (wa *WhatsAppClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (result *bridgev2.MatrixMessageResponse, retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		return wa.handleDebugPortalMatrixMessage(msg)
+	}
 	if isInternalMessage(msg.Content) {
 		return wa.handleInternalMatrixMessage(msg)
 	}
@@ -182,6 +185,11 @@ var ErrBroadcastSendDisabled = bridgev2.WrapErrorInStatus(errors.New("sending st
 var ErrBroadcastReactionUnsupported = bridgev2.WrapErrorInStatus(errors.New("reacting to status messages is not currently supported")).WithErrorAsMessage().WithIsCertain(true).WithSendNotice(true).WithErrorReason(event.MessageStatusUnsupported)
 
 func (wa *WhatsAppClient) handleConvertedMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage, waMsg *waE2E.Message, req *whatsmeow.SendRequestExtra) (*bridgev2.MatrixMessageResponse, error) {
+	// Also the chokepoint for polls (HandleMatrixPollStart/Vote), so debug
+	// portals are covered here too — never relay their content to WhatsApp.
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		return wa.handleDebugPortalMatrixMessage(msg)
+	}
 	if req == nil {
 		req = &whatsmeow.SendRequestExtra{}
 	}
@@ -250,8 +258,9 @@ func (wa *WhatsAppClient) PreHandleMatrixReaction(_ context.Context, msg *bridge
 }
 
 func (wa *WhatsAppClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (result *database.Reaction, retErr error) {
-	if isInternalDBMessage(msg.TargetMessage) {
-		// Reactions to internal notes stay on the Matrix side.
+	if wa.portalIsSyncContactDebug(msg.Portal) || isInternalDBMessage(msg.TargetMessage) {
+		// Debug portals never talk to WhatsApp; reactions to internal notes
+		// likewise stay on the Matrix side.
 		return &database.Reaction{
 			Metadata: &waid.ReactionMetadata{
 				SenderDeviceID: wa.JID.Device,
@@ -297,6 +306,10 @@ func (wa *WhatsAppClient) HandleMatrixReaction(ctx context.Context, msg *bridgev
 }
 
 func (wa *WhatsAppClient) HandleMatrixReactionRemove(ctx context.Context, msg *bridgev2.MatrixReactionRemove) (retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		// Debug portal: the reaction only ever existed on Matrix.
+		return nil
+	}
 	if waid.IsFakeMessageID(msg.TargetReaction.MessageID) {
 		// The reaction targets a message that never existed on WhatsApp
 		// (e.g. an internal note), so there is nothing to remove there.
@@ -332,6 +345,11 @@ func (wa *WhatsAppClient) HandleMatrixReactionRemove(ctx context.Context, msg *b
 }
 
 func (wa *WhatsAppClient) HandleMatrixEdit(ctx context.Context, edit *bridgev2.MatrixEdit) (retErr error) {
+	if wa.portalIsSyncContactDebug(edit.Portal) {
+		// Debug portal: the message was never on WhatsApp, so the edit is
+		// complete on the Matrix side.
+		return nil
+	}
 	if isInternalDBMessage(edit.EditTarget) {
 		// Internal notes only exist on the Matrix side; accept the edit
 		// without contacting WhatsApp.
@@ -382,9 +400,9 @@ func (wa *WhatsAppClient) HandleMatrixEdit(ctx context.Context, edit *bridgev2.M
 }
 
 func (wa *WhatsAppClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) (retErr error) {
-	if isInternalDBMessage(msg.TargetMessage) {
-		// Internal notes were never sent to WhatsApp, so a Matrix redaction
-		// is complete on its own.
+	if wa.portalIsSyncContactDebug(msg.Portal) || isInternalDBMessage(msg.TargetMessage) {
+		// Debug portals never reached WhatsApp; internal notes never did
+		// either — the Matrix redaction is complete on its own.
 		return nil
 	}
 	log := zerolog.Ctx(ctx)
@@ -412,6 +430,10 @@ func (wa *WhatsAppClient) HandleMatrixMessageRemove(ctx context.Context, msg *br
 }
 
 func (wa *WhatsAppClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bridgev2.MatrixReadReceipt) (retErr error) {
+	if wa.portalIsSyncContactDebug(receipt.Portal) {
+		// Never leak read receipts to the real network for a debug portal.
+		return nil
+	}
 	if !receipt.ReadUpTo.After(receipt.LastRead) {
 		return nil
 	}
@@ -461,6 +483,10 @@ func (wa *WhatsAppClient) HandleMatrixReadReceipt(ctx context.Context, receipt *
 }
 
 func (wa *WhatsAppClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2.MatrixTyping) (retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		// Never leak typing presence to the real network for a debug portal.
+		return nil
+	}
 	portalJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return err
@@ -494,6 +520,9 @@ func (wa *WhatsAppClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2.
 var errUnsupportedDisappearingTimer = bridgev2.WrapErrorInStatus(errors.New("invalid value for disappearing timer")).WithErrorAsMessage().WithIsCertain(true).WithSendNotice(true)
 
 func (wa *WhatsAppClient) HandleMatrixDisappearingTimer(ctx context.Context, msg *bridgev2.MatrixDisappearingTimer) (ok bool, retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		return false, nil
+	}
 	portalJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return false, err
@@ -523,6 +552,9 @@ func (wa *WhatsAppClient) HandleMatrixDisappearingTimer(ctx context.Context, msg
 }
 
 func (wa *WhatsAppClient) HandleMatrixMembership(ctx context.Context, msg *bridgev2.MatrixMembershipChange) (result *bridgev2.MatrixMembershipResult, retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		return nil, nil
+	}
 	if msg.Type.IsSelf && msg.OrigSender != nil {
 		return nil, nil
 	}
@@ -583,6 +615,9 @@ func (wa *WhatsAppClient) HandleMatrixMembership(ctx context.Context, msg *bridg
 }
 
 func (wa *WhatsAppClient) HandleMatrixRoomName(ctx context.Context, msg *bridgev2.MatrixRoomName) (ok bool, retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		return false, nil
+	}
 	portalJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return false, err
@@ -605,6 +640,9 @@ func (wa *WhatsAppClient) HandleMatrixRoomName(ctx context.Context, msg *bridgev
 }
 
 func (wa *WhatsAppClient) HandleMatrixRoomTopic(ctx context.Context, msg *bridgev2.MatrixRoomTopic) (ok bool, retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		return false, nil
+	}
 	portalJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return false, err
@@ -630,6 +668,9 @@ func (wa *WhatsAppClient) HandleMatrixRoomTopic(ctx context.Context, msg *bridge
 }
 
 func (wa *WhatsAppClient) HandleMatrixRoomAvatar(ctx context.Context, msg *bridgev2.MatrixRoomAvatar) (ok bool, retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		return false, nil
+	}
 	portalJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return false, err
@@ -786,6 +827,11 @@ func (wa *WhatsAppClient) HandleMarkedUnread(ctx context.Context, msg *bridgev2.
 }
 
 func (wa *WhatsAppClient) HandleMatrixDeleteChat(ctx context.Context, msg *bridgev2.MatrixDeleteChat) (retErr error) {
+	if wa.portalIsSyncContactDebug(msg.Portal) {
+		// Deleting a debug room is a Matrix-side cleanup; never sync it to
+		// WhatsApp (there is no real chat there to delete).
+		return nil
+	}
 	chatJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return err

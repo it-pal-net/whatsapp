@@ -182,6 +182,7 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 			}()
 			go wa.syncRemoteProfile(ctx, nil)
 		}
+		go wa.sweepFallbackNameGhosts()
 	case *events.OfflineSyncPreview:
 		log.Info().
 			Int("message_count", evt.Messages).

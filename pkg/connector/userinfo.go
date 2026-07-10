@@ -33,6 +33,14 @@ var ResyncJitterSeconds = 3600
 // is still the empty-contact fallback (bare phone number). See GetUserInfo.
 var FallbackNameRetryInterval = 1 * time.Hour
 
+// FallbackNameSweepDelay is how long sweepFallbackNameGhosts waits after a
+// connect before running, so it doesn't compete with offline-sync catch-up.
+var FallbackNameSweepDelay = 30 * time.Second
+
+// fallbackNameSweepBatchSize caps how many JIDs go into a single usync query
+// during the sweep.
+const fallbackNameSweepBatchSize = 50
+
 func (wa *WhatsAppClient) EnqueueGhostResync(ghost *bridgev2.Ghost) {
 	lastSync := ghost.Metadata.(*waid.GhostMetadata).LastSync.Time
 	if lastSync.Add(ResyncMinInterval).After(time.Now()) {
@@ -565,6 +573,81 @@ func (wa *WhatsAppClient) ResyncGhostNames(ctx context.Context, jids []types.JID
 		results = append(results, res)
 	}
 	return results, nil
+}
+
+// sweepFallbackNameGhosts re-fetches live user info for the DM ghosts of this
+// login's portals that are still stuck on the empty-contact fallback name
+// (bare phone number / "Unknown user") or were never named at all. None of the
+// lazy paths can recover these without the contact acting first: the
+// GetUserInfo fallback retry only fires when that contact sends a message,
+// resyncContacts only iterates contact-store rows (which fallback-named ghosts
+// by definition don't have), and the background resync queue starts empty
+// after a restart. Runs once per events.Connected, delayed by
+// FallbackNameSweepDelay; FallbackNameRetryInterval gates each ghost so
+// reconnect churn doesn't spam usync queries.
+func (wa *WhatsAppClient) sweepFallbackNameGhosts() {
+	log := wa.UserLogin.Log.With().Str("action", "fallback name sweep").Logger()
+	ctx := log.WithContext(wa.Main.Bridge.BackgroundCtx)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(FallbackNameSweepDelay):
+	}
+	if !wa.IsLoggedIn() {
+		return
+	}
+	portals, err := wa.Main.Bridge.DB.Portal.GetAll(ctx)
+	if err != nil {
+		log.Err(err).Msg("Failed to get portals for fallback name sweep")
+		return
+	}
+	var jids []types.JID
+	for _, portal := range portals {
+		if portal.Receiver != wa.UserLogin.ID || portal.OtherUserID == "" || portal.MXID == "" {
+			continue
+		}
+		jid := waid.ParseUserID(portal.OtherUserID)
+		if jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer {
+			continue
+		}
+		ghost, err := wa.Main.Bridge.GetGhostByID(ctx, portal.OtherUserID)
+		if err != nil {
+			log.Warn().Err(err).
+				Str("ghost_id", string(portal.OtherUserID)).
+				Msg("Failed to get ghost for fallback name sweep")
+			continue
+		}
+		if ghost.Name != "" && ghost.NameSet && !wa.isFallbackName(ctx, jid, ghost.Name) {
+			continue
+		}
+		if time.Since(ghost.Metadata.(*waid.GhostMetadata).LastSync.Time) < FallbackNameRetryInterval {
+			continue
+		}
+		jids = append(jids, jid)
+	}
+	if len(jids) == 0 {
+		log.Debug().Msg("No ghosts stuck with fallback names")
+		return
+	}
+	log.Info().
+		Array("jids", exzerolog.ArrayOfStringers(jids)).
+		Msg("Resyncing ghosts stuck with fallback names")
+	for start := 0; start < len(jids); start += fallbackNameSweepBatchSize {
+		batch := jids[start:min(start+fallbackNameSweepBatchSize, len(jids))]
+		results, err := wa.ResyncGhostNames(ctx, batch)
+		if err != nil {
+			log.Err(err).Msg("Failed to resync ghosts stuck with fallback names")
+			return
+		}
+		for _, res := range results {
+			log.Info().
+				Str("jid", res.JID).
+				Str("business_name", res.BusinessName).
+				Str("push_name", res.PushName).
+				Str("ghost_name", res.GhostName).
+				Msg("Fallback name sweep result")
+		}
+	}
 }
 
 func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, info *bridgev2.UserInfo) {

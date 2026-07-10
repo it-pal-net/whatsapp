@@ -55,6 +55,7 @@ func (wa *WhatsAppConnector) LoadUserLogin(ctx context.Context, login *bridgev2.
 		mediaRetryLock:            semaphore.NewWeighted(wa.Config.HistorySync.MediaRequests.MaxAsyncHandle),
 		pushNamesSynced:           exsync.NewEvent(),
 		createDedup:               exsync.NewSet[types.MessageID](),
+		debugInboundJIDs:          exsync.NewSet[types.JID](),
 		appStateFullSyncAttempted: make(map[appstate.WAPatchName]time.Time),
 	}
 	login.Client = w
@@ -119,6 +120,12 @@ type WhatsAppClient struct {
 	pushNamesSynced    *exsync.Event
 	lastPresence       types.Presence
 	createDedup        *exsync.Set[types.MessageID]
+	// JIDs whose portals were fabricated by the debug inbound injector. Seeded
+	// by InjectFakeInbound before the synthetic event is queued, so the portal
+	// is stamped SyncContactDebug at creation (chatinfo.go) before any Matrix
+	// send could target it. In-memory only (re-seeded per injection); the
+	// durable source of truth once a portal exists is its metadata flag.
+	debugInboundJIDs *exsync.Set[types.JID]
 
 	appStateRecoveryLock      sync.Mutex
 	appStateFullSyncAttempted map[appstate.WAPatchName]time.Time

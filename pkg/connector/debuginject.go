@@ -23,6 +23,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+
+	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
 
 // FakeInboundMessage describes one synthetic inbound WhatsApp message.
@@ -78,6 +80,13 @@ func (wa *WhatsAppClient) InjectFakeInbound(ctx context.Context, spec FakeInboun
 	// have populated. For a 1:1 chat the portal key is derived from Chat, and
 	// Chat == Sender == the other party.
 	senderJID := types.JID{User: spec.Phone, Server: types.DefaultUserServer}
+
+	// Mark this JID before the synthetic event is queued, so the portal it
+	// creates is stamped SyncContactDebug during creation (chatinfo.go) — before
+	// discovery or any automation could send a Matrix event into it. Every
+	// Matrix->WhatsApp handler then drops the network send for this portal, so a
+	// fixture/repro conversation never messages the real number.
+	wa.debugInboundJIDs.Add(senderJID)
 
 	// The ghost's display name is resolved from the WhatsApp contact store
 	// (GetUserInfo -> Contacts.GetContact), NOT from the message's PushName
@@ -149,6 +158,14 @@ func (wa *WhatsAppClient) ensureInjectedPortalNamed(key networkid.PortalKey, nam
 	// Let the creation's own (cancel-prone) metadata writes settle before we
 	// assert the final state, so we don't race them.
 	time.Sleep(1500 * time.Millisecond)
+	// Belt-and-suspenders: ensure the debug flag is persisted even if the
+	// creation-time stamp was missed (e.g. the portal already existed). The
+	// ExtraUpdater is a no-op when the flag is already set.
+	if meta, ok := portal.Metadata.(*waid.PortalMetadata); !ok || !meta.SyncContactDebug {
+		portal.UpdateInfo(ctx, &bridgev2.ChatInfo{
+			ExtraUpdates: stampSyncContactDebug,
+		}, wa.UserLogin, nil, time.Time{})
+	}
 	if portal.NameSet && portal.Name == name {
 		return
 	}

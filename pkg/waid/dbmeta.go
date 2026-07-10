@@ -154,6 +154,16 @@ type PortalMetadata struct {
 	// cmd/mautrix-whatsapp/disappearfilter.go). Toggled per room via the
 	// /v3/portals/{roomID}/settings provisioning endpoint.
 	RespectDisappearingTimer bool `json:"respect_disappearing_timer,omitempty"`
+	// SyncContactDebug marks a portal fabricated by the debug inbound injector
+	// (SYNCCONTACT_DEBUG_INBOUND, see cmd/mautrix-whatsapp/debugprovision.go).
+	// Such a portal is a real Matrix room on a real login, so without a guard
+	// any outbound Matrix event would relay to the LIVE WhatsApp network —
+	// messaging the (usually random) synthetic phone number for real. Every
+	// Matrix->WhatsApp handler drops the network send for a portal with this
+	// flag, keeping fixture/repro traffic entirely local while the Matrix
+	// timeline still behaves normally. Stamped at portal creation (chatinfo.go)
+	// and never cleared.
+	SyncContactDebug bool `json:"synccontact_debug,omitempty"`
 }
 
 type GhostMetadata struct {

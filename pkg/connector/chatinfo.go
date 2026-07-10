@@ -72,6 +72,12 @@ func (wa *WhatsAppClient) addExtrasToWrapped(ctx context.Context, portalJID type
 			wa.applyHistoryInfo(wrapped, conv)
 		}
 	}
+	// A portal being created for a debug-injected JID is stamped now, at
+	// creation, so it is flagged before the Matrix room exists — hence before
+	// discovery or any automation could send into it. See debugportal.go.
+	if wa.debugInboundJIDs.Has(portalJID) {
+		wrapped.ExtraUpdates = bridgev2.MergeExtraUpdaters(wrapped.ExtraUpdates, stampSyncContactDebug)
+	}
 	wa.applyChatSettings(ctx, portalJID, wrapped)
 }
 
@@ -181,6 +187,30 @@ func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridge
 		// messages resolve to a named sender. (Group portals already include the
 		// self LID via their participant list.)
 		info.Members.MemberMap[waid.MakeUserID(lid)] = bridgev2.ChatMember{EventSender: wa.makeEventSender(ctx, lid)}
+	}
+	if jid != wa.JID.ToNonAD() {
+		// Resolve the remote user's info inline so the ghost — and, via
+		// private_chat_portal_meta, the room name — is right from the moment the
+		// portal is created, even when we messaged first and the contact never
+		// wrote back. Without this the other-user ghost only gets named when the
+		// contact sends a message (bridgev2 fetches user info for message senders
+		// only), which left operator-initiated business DMs stuck on the bare
+		// phone number. getUserInfo does a live usync when the local contact
+		// store has no name — the only place a business account's verified name
+		// exists — and syncParticipants applies member.UserInfo on every chat
+		// sync, so portal resyncs also repaint a ghost that got stuck earlier.
+		// Best-effort: on error the member just stays lazily named.
+		if ghost, err := wa.Main.Bridge.GetGhostByID(ctx, info.Members.OtherUserID); err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Stringer("jid", jid).
+				Msg("Failed to get ghost to attach DM member info")
+		} else if userInfo, err := wa.getUserInfo(ctx, jid, ghost.AvatarID == ""); err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Stringer("jid", jid).
+				Msg("Failed to get user info for DM member")
+		} else {
+			member := info.Members.MemberMap[info.Members.OtherUserID]
+			member.UserInfo = userInfo
+			info.Members.MemberMap[info.Members.OtherUserID] = member
+		}
 	}
 	return info
 }
