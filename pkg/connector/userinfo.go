@@ -29,6 +29,10 @@ var ResyncMinInterval = 7 * 24 * time.Hour
 var ResyncLoopInterval = 4 * time.Hour
 var ResyncJitterSeconds = 3600
 
+// FallbackNameRetryInterval throttles live usync retries for ghosts whose name
+// is still the empty-contact fallback (bare phone number). See GetUserInfo.
+var FallbackNameRetryInterval = 1 * time.Hour
+
 func (wa *WhatsAppClient) EnqueueGhostResync(ghost *bridgev2.Ghost) {
 	lastSync := ghost.Metadata.(*waid.GhostMetadata).LastSync.Time
 	if lastSync.Add(ResyncMinInterval).After(time.Now()) {
@@ -177,12 +181,38 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 }
 
 func (wa *WhatsAppClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	if ghost.Name != "" && ghost.NameSet {
-		wa.EnqueueGhostResync(ghost)
-		return nil, nil
-	}
 	jid := waid.ParseUserID(ghost.ID)
+	if ghost.Name != "" && ghost.NameSet {
+		// A name that's just the empty-contact fallback (bare phone number or
+		// "Unknown user") means we never actually learned who this is: a single
+		// failed or empty usync at ghost creation time would otherwise stick the
+		// number until the 7-day background resync. Let those ghosts retry the
+		// full lookup, throttled by LastSync so an active chat with a genuinely
+		// nameless contact doesn't usync on every message.
+		lastSync := ghost.Metadata.(*waid.GhostMetadata).LastSync.Time
+		if !wa.isFallbackName(ctx, jid, ghost.Name) || time.Since(lastSync) < FallbackNameRetryInterval {
+			wa.EnqueueGhostResync(ghost)
+			return nil, nil
+		}
+	}
 	return wa.getUserInfo(ctx, jid, ghost.AvatarID == "")
+}
+
+// isFallbackName reports whether name is exactly what displayname_template
+// produces for jid with an empty contact — i.e. the ghost was named while we
+// knew nothing about the user. For LID ghosts the phone-based fallback is also
+// checked, since contactToUserInfo fills the phone in from the alt JID.
+func (wa *WhatsAppClient) isFallbackName(ctx context.Context, jid types.JID, name string) bool {
+	if name == wa.Main.Config.FormatDisplayname(jid, "", types.ContactInfo{}) {
+		return true
+	}
+	if jid.Server == types.HiddenUserServer {
+		altJID, err := wa.GetStore().GetAltJID(ctx, jid)
+		if err == nil && altJID.Server == types.DefaultUserServer {
+			return name == wa.Main.Config.FormatDisplayname(jid, "+"+altJID.User, types.ContactInfo{})
+		}
+	}
+	return false
 }
 
 // contactHasName reports whether the local contact store already has a usable
@@ -208,13 +238,15 @@ func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, fetchA
 	if !contactHasName(contact) &&
 		(jid.Server == types.DefaultUserServer || jid.Server == types.HiddenUserServer) &&
 		wa.IsLoggedIn() {
-		if infos, uErr := wa.Client.GetUserInfo(ctx, []types.JID{jid}); uErr != nil {
+		if _, uErr := wa.Client.GetUserInfo(ctx, []types.JID{jid}); uErr != nil {
 			zerolog.Ctx(ctx).Debug().Err(uErr).Stringer("jid", jid).
 				Msg("Failed to fetch live user info for nameless contact")
-		} else if _, ok := infos[jid]; ok {
-			if refreshed, cErr := wa.GetStore().Contacts.GetContact(ctx, jid); cErr == nil {
-				contact = refreshed
-			}
+		} else if refreshed, cErr := wa.GetStore().Contacts.GetContact(ctx, jid); cErr == nil {
+			// Don't gate the re-read on the response map containing jid: for
+			// LID-migrated accounts the usync response is keyed by the user's
+			// OTHER JID (the LID when querying by phone number), but whatsmeow
+			// stores any verified name under both JIDs regardless.
+			contact = refreshed
 		}
 	}
 	return wa.contactToUserInfo(ctx, jid, contact, fetchAvatar), nil
@@ -509,7 +541,16 @@ func (wa *WhatsAppClient) ResyncGhostNames(ctx context.Context, jids []types.JID
 	results := make([]ResyncGhostNameResult, 0, len(jids))
 	for _, jid := range jids {
 		res := ResyncGhostNameResult{JID: jid.String()}
-		if info, ok := infos[jid]; ok && info.VerifiedName != nil {
+		info, ok := infos[jid]
+		if !ok {
+			// usync responses for LID-migrated accounts are keyed by the user's
+			// alt JID (the LID when querying by phone number), not the JID that
+			// was queried.
+			if altJID, altErr := wa.GetStore().GetAltJID(ctx, jid); altErr == nil && !altJID.IsEmpty() {
+				info, ok = infos[altJID]
+			}
+		}
+		if ok && info.VerifiedName != nil {
 			res.VerifiedName = info.VerifiedName.Details.GetVerifiedName()
 		}
 		if contact, err := wa.GetStore().Contacts.GetContact(ctx, jid); err == nil {
